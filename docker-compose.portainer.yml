@@ -1,0 +1,55 @@
+x-followup-environment: &followup-environment
+  DATABASE_URL: ${DATABASE_URL}
+  SOURCE_USUARIOS_SDR_DATABASE_URL: ${SOURCE_USUARIOS_SDR_DATABASE_URL}
+  SOURCE_CLINICA_NOVA_DATABASE_URL: ${SOURCE_CLINICA_NOVA_DATABASE_URL}
+  WHATSAPP_API_BASE_URL: ${WHATSAPP_API_BASE_URL}
+  WHATSAPP_SENDER_1_TOKEN: ${WHATSAPP_SENDER_1_TOKEN}
+  WHATSAPP_SENDER_2_TOKEN: ${WHATSAPP_SENDER_2_TOKEN}
+  FOLLOWUP_SEND_MODE: ${FOLLOWUP_SEND_MODE:-dry_run}
+  WORKER_API_KEY: ${WORKER_API_KEY}
+  UAZAPI_WEBHOOK_SECRET: ${UAZAPI_WEBHOOK_SECRET}
+  NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+  WORKER_POLL_MS: ${WORKER_POLL_MS:-30000}
+  WORKER_ENROLL_INTERVAL_MS: ${WORKER_ENROLL_INTERVAL_MS:-300000}
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+    image: followup-clinica:latest
+    restart: unless-stopped
+    environment:
+      <<: *followup-environment
+      APP_ROLE: web
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    image: followup-clinica:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+    restart: unless-stopped
+    environment:
+      <<: *followup-environment
+      APP_ROLE: worker
+      FOLLOWUP_APP_URL: http://web:3000
+    depends_on:
+      web:
+        condition: service_healthy
