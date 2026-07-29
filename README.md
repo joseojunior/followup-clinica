@@ -97,3 +97,8 @@ conseguem acessar e defina `FOLLOWUP_IMAGE`, por exemplo
 `ghcr.io/sua-organizacao/followup-clinica:1.0.0`. Cadastre também `FOLLOWUP_HOST`
 e as demais variáveis do `.env.example` no Portainer. Não coloque tokens ou senhas
 diretamente no YAML.
+
+O workflow `.github/workflows/publish-container.yml` publica automaticamente no GHCR
+após cada push na `main`. Configure no repositório as Actions Variables
+`NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`; a imagem será
+publicada como `ghcr.io/joseojunior/followup-clinica:latest`.
