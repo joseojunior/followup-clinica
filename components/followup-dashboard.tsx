@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { LogoutButton } from "@/components/logout-button";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type ContentKind = "Texto" | "Sticker + texto" | "Imagem + texto";
 
@@ -128,7 +129,7 @@ type LeadRow = {
   next_followup_at: string | null;
 };
 type MessageRow = { id: string; state: string; scheduled_at: string; sent_at: string | null; error_message: string | null; content_snapshot: { text?: string; type?: string }; source_chat_id: string; source_name: string; campaign_name: string };
-type LibraryItem = { id: string; content_type: "text" | "sticker" | "image" | "sequence"; text_template: string | null; media_url: string | null; is_active: boolean; variant_order: number; step_order: number; campaign_name: string; unit_name: string };
+type LibraryItem = { id: string; name: string; content_type: "text" | "sticker" | "image"; text_template: string | null; media_url: string | null; storage_path: string | null; is_active: boolean; created_at: string };
 type BroadcastSetup = {
   senders: Array<{ code: "sender_1" | "sender_2"; name: string; whatsapp_number: string | null }>;
   broadcasts: Array<{ id: string; name: string; status: string; scheduled_at: string; created_at: string; recipients: number; sent: number; failed: number }>;
@@ -169,7 +170,7 @@ export function FollowupDashboard() {
     const term = libraryQuery.trim().toLocaleLowerCase("pt-BR");
     return libraryItems.filter((item) => {
       const matchesType = libraryFilter === "all" || item.content_type === libraryFilter;
-      const searchable = `${item.campaign_name} ${item.text_template ?? ""} ${item.unit_name}`.toLocaleLowerCase("pt-BR");
+      const searchable = `${item.name} ${item.text_template ?? ""}`.toLocaleLowerCase("pt-BR");
       return matchesType && (!term || searchable.includes(term));
     });
   }, [libraryFilter, libraryItems, libraryQuery]);
@@ -466,6 +467,18 @@ export function FollowupDashboard() {
     setSteps((current) => current.map((step) => step.id === id ? { ...step, [field]: value } : step));
   }
 
+  function useLibraryItem(stepId: number, itemId: string) {
+    const item = libraryItems.find((candidate) => candidate.id === itemId);
+    if (!item) return;
+    const kind: ContentKind = item.content_type === "text" ? "Texto" : item.content_type === "sticker" ? "Sticker + texto" : "Imagem + texto";
+    setSteps((current) => current.map((step) => step.id === stepId ? {
+      ...step,
+      kind,
+      textTemplate: item.text_template ?? "",
+      mediaUrl: item.media_url ?? "",
+    } : step));
+  }
+
   async function saveCampaign() {
     setSaveState("saving");
     setSaveMessage("");
@@ -588,6 +601,12 @@ export function FollowupDashboard() {
                 <div className="step-number">{index + 1}</div>
                 <div className="step-main">
                   <div className="step-title-row"><h2>Etapa {index + 1}</h2><span>{formatDuration(step.delay)} após a última mensagem</span></div>
+                  <label className="step-library-picker">Usar conteúdo da biblioteca
+                    <select defaultValue="" disabled={editingStructureLocked || libraryItems.length === 0} onChange={(event) => { useLibraryItem(step.id, event.target.value); event.currentTarget.value = ""; }}>
+                      <option value="" disabled>{libraryItems.length ? "Escolher texto, sticker ou imagem" : "Biblioteca vazia"}</option>
+                      {libraryItems.map((item) => <option key={item.id} value={item.id}>{libraryTypeLabel(item.content_type)} · {item.name}</option>)}
+                    </select>
+                  </label>
                   <div className="step-controls">
                     <label>Momento
                       <input type="number" min={index === 0 ? 1 : steps[index - 1].delay + 1} max="2160" disabled={editingStructureLocked} value={step.delay} onChange={(event) => updateStep(step.id, "delay", Number(event.target.value))} /> horas
@@ -697,24 +716,15 @@ export function FollowupDashboard() {
           <div className="data-table">{messages.map((message) => <article key={message.id}><div><strong>{message.content_snapshot?.text || message.content_snapshot?.type || "Mensagem"}</strong><small>{message.source_name} · {message.campaign_name}</small></div><span className={`table-status ${message.state}`}>{message.state}</span></article>)}</div>
         </DataPanel>}
 
-        {activeNav === "Biblioteca" && <section className="library-screen">
-          <header className="library-heading">
-            <div><p className="eyebrow">Conteúdos da clínica</p><h2>Biblioteca de mensagens</h2><p>Encontre o texto, sticker ou imagem certo antes de montar uma nova cadência.</p></div>
-            <span>{libraryItems.length} conteúdo{libraryItems.length === 1 ? "" : "s"} disponível{libraryItems.length === 1 ? "" : "is"}</span>
-          </header>
-          <div className="library-tools">
-            <label className="library-search"><span>Buscar</span><input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Ex.: retorno, avaliação, sorriso" /></label>
-            <div className="library-filters" aria-label="Filtrar conteúdos">
-              {(["all", "text", "sticker", "image"] as const).map((filter) => <button key={filter} className={libraryFilter === filter ? "active" : ""} onClick={() => setLibraryFilter(filter)}>{libraryFilterLabel(filter)}</button>)}
-            </div>
-          </div>
-          {filteredLibraryItems.length ? <div className="content-library-grid">{filteredLibraryItems.map((item) => <article className="content-library-card" key={item.id}>
-            <div className="content-card-top"><span className={`content-type ${item.content_type}`}>{libraryTypeLabel(item.content_type)}</span><span>Etapa {item.step_order}</span></div>
-            <p>{item.text_template || (item.media_url ? "Conteúdo visual sem texto." : "Conteúdo sem descrição.")}</p>
-            {item.media_url && <a href={item.media_url} target="_blank" rel="noreferrer">Ver mídia ↗</a>}
-            <footer><span>{item.campaign_name}</span><small>{item.unit_name}</small></footer>
-          </article>)}</div> : <div className="library-empty"><strong>Nenhum conteúdo encontrado.</strong><span>Altere a busca ou crie uma campanha com texto, sticker ou imagem.</span></div>}
-        </section>}
+        {activeNav === "Biblioteca" && <LibraryPanel
+          items={libraryItems}
+          filteredItems={filteredLibraryItems}
+          query={libraryQuery}
+          filter={libraryFilter}
+          onQueryChange={setLibraryQuery}
+          onFilterChange={setLibraryFilter}
+          onReload={loadLibrary}
+        />}
 
         {activeNav === "Pendências" && <DataPanel hasRows={[...databaseLeads, ...csvLeads].some((lead) => Boolean(lead.state && ["paused", "blocked", "pending_data"].includes(lead.state)) || !lead.is_eligible)} title="Pendências operacionais" subtitle="Leads pausados, bloqueados ou com dados ausentes" empty="Nenhuma pendência operacional.">
           <div className="data-table">{[...databaseLeads, ...csvLeads].filter((lead) => Boolean(lead.state && ["paused", "blocked", "pending_data"].includes(lead.state)) || !lead.is_eligible).map((lead) => <article key={lead.id}><div><strong>{lead.name || lead.phone || "Contato"}</strong><small>{lead.eligibility_reason || "Verifique os dados deste contato"}</small></div><span className={`table-status ${lead.state ?? "pending_data"}`}>{lead.state ?? "pending_data"}</span></article>)}</div>
@@ -733,11 +743,119 @@ function DataPanel({ title, subtitle, empty, children, hasRows }: { title: strin
 }
 
 function libraryFilterLabel(value: "all" | LibraryItem["content_type"]) {
-  return { all: "Todos", text: "Textos", sticker: "Stickers", image: "Imagens", sequence: "Sequências" }[value];
+  return { all: "Todos", text: "Textos", sticker: "Stickers", image: "Imagens" }[value];
 }
 
 function libraryTypeLabel(value: LibraryItem["content_type"]) {
-  return { text: "Texto", sticker: "Sticker", image: "Imagem", sequence: "Sequência" }[value];
+  return { text: "Texto", sticker: "Sticker", image: "Imagem" }[value];
+}
+
+function LibraryPanel({ items, filteredItems, query, filter, onQueryChange, onFilterChange, onReload }: {
+  items: LibraryItem[];
+  filteredItems: LibraryItem[];
+  query: string;
+  filter: "all" | LibraryItem["content_type"];
+  onQueryChange: (value: string) => void;
+  onFilterChange: (value: "all" | LibraryItem["content_type"]) => void;
+  onReload: () => Promise<void>;
+}) {
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [contentType, setContentType] = useState<LibraryItem["content_type"]>("text");
+  const [textTemplate, setTextTemplate] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [action, setAction] = useState<"idle" | "saving" | "archiving">("idle");
+  const [message, setMessage] = useState("");
+
+  function resetForm() {
+    setName("");
+    setContentType("text");
+    setTextTemplate("");
+    setFile(null);
+    setComposerOpen(false);
+  }
+
+  async function saveItem(event: React.FormEvent) {
+    event.preventDefault();
+    setAction("saving");
+    setMessage("");
+    let uploadedPath: string | null = null;
+    try {
+      let mediaUrl: string | null = null;
+      if (contentType !== "text") {
+        if (!file) throw new Error("Selecione a imagem ou o sticker.");
+        if (file.size > 10 * 1024 * 1024) throw new Error("O arquivo deve ter no máximo 10 MB.");
+        const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+        const extension = extensions[file.type];
+        if (!extension) throw new Error("Use PNG, JPG, WEBP ou GIF.");
+        uploadedPath = `library/${crypto.randomUUID()}.${extension}`;
+        const supabase = createSupabaseBrowserClient();
+        const uploaded = await supabase.storage.from("followup-library").upload(uploadedPath, file, { contentType: file.type, cacheControl: "31536000", upsert: false });
+        if (uploaded.error) throw new Error(uploaded.error.message);
+        mediaUrl = supabase.storage.from("followup-library").getPublicUrl(uploadedPath).data.publicUrl;
+      }
+      const response = await fetch("/api/library", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, contentType, textTemplate, mediaUrl, storagePath: uploadedPath }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível salvar o conteúdo.");
+      await onReload();
+      resetForm();
+      setMessage("Conteúdo adicionado à biblioteca.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível salvar o conteúdo.");
+    } finally {
+      setAction("idle");
+    }
+  }
+
+  async function archiveItem(item: LibraryItem) {
+    if (!window.confirm(`Arquivar “${item.name}”? Campanhas que já usam esse conteúdo não serão alteradas.`)) return;
+    setAction("archiving");
+    setMessage("");
+    try {
+      const response = await fetch(`/api/library/${item.id}`, { method: "DELETE" });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível arquivar o conteúdo.");
+      await onReload();
+      setMessage("Conteúdo arquivado. Campanhas existentes foram preservadas.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Não foi possível arquivar o conteúdo.");
+    } finally {
+      setAction("idle");
+    }
+  }
+
+  return <section className="library-screen">
+    <header className="library-heading">
+      <div><p className="eyebrow">Conteúdos da clínica</p><h2>Biblioteca de mensagens</h2><p>Cadastre uma vez e reutilize textos, stickers e imagens em qualquer campanha.</p></div>
+      <div className="library-heading-actions"><span>{items.length} conteúdo{items.length === 1 ? "" : "s"}</span><button className="primary-button" onClick={() => setComposerOpen((open) => !open)}>{composerOpen ? "Fechar cadastro" : "+ Adicionar conteúdo"}</button></div>
+    </header>
+    {composerOpen && <form className="library-composer" onSubmit={saveItem}>
+      <div><p className="eyebrow">Novo item</p><h3>Prepare o conteúdo reutilizável</h3><p>Imagens e stickers ficam hospedados no Supabase Storage e podem ser lidos pelo WhatsApp.</p></div>
+      <label>Nome do conteúdo<input value={name} maxLength={100} required onChange={(event) => setName(event.target.value)} placeholder="Ex.: Retorno após avaliação" /></label>
+      <label>Tipo<select value={contentType} onChange={(event) => { setContentType(event.target.value as LibraryItem["content_type"]); setFile(null); }}><option value="text">Texto</option><option value="sticker">Sticker + texto</option><option value="image">Imagem + texto</option></select></label>
+      <label className="library-message-field">Texto da mensagem<textarea value={textTemplate} required={contentType === "text"} maxLength={4000} onChange={(event) => setTextTemplate(event.target.value)} placeholder="Use {{nome}} para personalizar." /></label>
+      {contentType !== "text" && <label className="library-file-field">Arquivo<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" required onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><small>PNG, JPG, WEBP ou GIF · até 10 MB</small></label>}
+      <button className="primary-button" disabled={action !== "idle"}>{action === "saving" ? "Enviando..." : "Salvar na biblioteca"}</button>
+    </form>}
+    {message && <p className="library-message">{message}</p>}
+    <div className="library-tools">
+      <label className="library-search"><span>Buscar</span><input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Ex.: retorno, avaliação, sorriso" /></label>
+      <div className="library-filters" aria-label="Filtrar conteúdos">
+        {(["all", "text", "sticker", "image"] as const).map((value) => <button key={value} className={filter === value ? "active" : ""} onClick={() => onFilterChange(value)}>{libraryFilterLabel(value)}</button>)}
+      </div>
+    </div>
+    {filteredItems.length ? <div className="content-library-grid">{filteredItems.map((item) => <article className="content-library-card" key={item.id}>
+      <div className="content-card-top"><span className={`content-type ${item.content_type}`}>{libraryTypeLabel(item.content_type)}</span><button onClick={() => archiveItem(item)} disabled={action !== "idle"}>Arquivar</button></div>
+      {item.media_url && <a className="library-media-preview" href={item.media_url} target="_blank" rel="noreferrer"><img src={item.media_url} alt="" /></a>}
+      <h3>{item.name}</h3>
+      <p>{item.text_template || "Conteúdo visual sem texto adicional."}</p>
+      <footer><span>Pronto para campanhas</span><small>{new Date(item.created_at).toLocaleDateString("pt-BR")}</small></footer>
+    </article>)}</div> : <div className="library-empty"><strong>Nenhum conteúdo encontrado.</strong><span>Adicione um texto, sticker ou imagem para reutilizar nas campanhas.</span></div>}
+  </section>;
 }
 
 function BroadcastPanel({ leads, senders, broadcasts, onCreate, message }: {

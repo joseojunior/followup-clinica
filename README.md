@@ -64,6 +64,16 @@ Os testes são registrados em `followup.campaign_test_runs` e não criam lead,
 não avançam estágio e não entram nas métricas oficiais. Em `dry_run`, o teste é
 somente simulado. Em `live`, a interface e a API exigem confirmação explícita.
 
+## Biblioteca de conteúdos e Supabase Storage
+
+- A migração `011_content_library.sql` cria o catálogo `followup.library_items` e o bucket público
+  `followup-library` com limite de 10 MB por arquivo.
+- Somente usuários autenticados podem enviar, substituir ou excluir arquivos; a leitura é pública
+  para que o provedor de WhatsApp consiga recuperar a mídia pela URL.
+- A Biblioteca aceita texto, PNG, JPG, WEBP e GIF. Ao montar uma campanha, use o seletor
+  **Usar conteúdo da biblioteca** para copiar texto e mídia para a etapa.
+- Arquivar um item remove-o do catálogo, mas preserva o arquivo e as campanhas que já o utilizam.
+
 ## Duas fontes de leads
 
 Cada fonte possui campanhas, inscrições, conteúdo e número remetente próprios:

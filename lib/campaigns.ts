@@ -22,7 +22,7 @@ export type CampaignStepInput = {
 export type CreateCampaignInput = {
   name: string;
   sourceCode: SourceCode;
-  status: "active" | "draft";
+  status: "active" | "draft" | "paused";
   autoEnroll: boolean;
   steps: CampaignStepInput[];
 };
@@ -35,7 +35,7 @@ export function validateCampaignInput(value: unknown): CreateCampaignInput {
   const name = input.name?.trim();
   if (!name || name.length > 120) throw new Error("Informe um nome de campanha com até 120 caracteres.");
   if (!sourceCodes.includes(input.sourceCode as SourceCode)) throw new Error("Fonte de leads inválida.");
-  if (input.status !== "active" && input.status !== "draft") throw new Error("Status da campanha inválido.");
+  if (input.status !== "active" && input.status !== "draft" && input.status !== "paused") throw new Error("Status da campanha inválido.");
   if (typeof input.autoEnroll !== "boolean") throw new Error("Configuração de gatilho inválida.");
   if (!Array.isArray(input.steps) || input.steps.length === 0 || input.steps.length > 12) {
     throw new Error("A campanha deve ter entre 1 e 12 etapas.");
