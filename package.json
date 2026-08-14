@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "config:check": "node --env-file=.env.local scripts/preflight.mjs",
     "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",

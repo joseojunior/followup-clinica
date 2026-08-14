@@ -22,20 +22,35 @@ async function execute(action) {
   return result;
 }
 
+async function executeSafely(action) {
+  try {
+    return { ok: true, result: await execute(action) };
+  } catch (error) {
+    console.error(new Date().toISOString(), `${action}:`, error instanceof Error ? error.message : error);
+    return { ok: false, result: { error: true } };
+  }
+}
+
 async function tick() {
   if (running) return;
   running = true;
   try {
     const shouldEnroll = Date.now() - lastEnrollmentAt >= enrollMilliseconds;
-    const enrolled = shouldEnroll ? await execute("enroll") : { enrolled: 0, skipped: true };
-    if (shouldEnroll) lastEnrollmentAt = Date.now();
-    const queued = await execute("queue");
-    const dispatched = await execute("dispatch");
-    const broadcasts = await execute("broadcast");
+    const enrollmentRun = shouldEnroll
+      ? await executeSafely("enroll")
+      : { ok: true, result: { enrolled: 0, skipped: true } };
+    if (shouldEnroll && enrollmentRun.ok) lastEnrollmentAt = Date.now();
+    const queueRun = await executeSafely("queue");
+    const dispatchRun = await executeSafely("dispatch");
+    const broadcastRun = await executeSafely("broadcast");
+    const enrolled = enrollmentRun.result;
+    const queued = queueRun.result;
+    const dispatched = dispatchRun.result;
+    const broadcasts = broadcastRun.result;
     const activity = (enrolled.enrolled || 0) + (queued.queued || 0) +
       (dispatched.sent || 0) + (dispatched.simulated || 0) +
       (broadcasts.sent || 0) + (broadcasts.simulated || 0);
-    if (activity) console.log(new Date().toISOString(), { enrolled, queued, dispatched, broadcasts });
+    if (activity || shouldEnroll) console.log(new Date().toISOString(), { enrolled, queued, dispatched, broadcasts });
   } catch (error) {
     console.error(new Date().toISOString(), error instanceof Error ? error.message : error);
   } finally {

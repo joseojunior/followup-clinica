@@ -17,6 +17,7 @@ export type LeadSnapshot = {
   sourceFollowupStage?: number | null;
   sourceLegacyFollowupStage?: string | null;
   sourceFollowupDate?: string | null;
+  sourceEventAt?: string | null;
 };
 
 export type Eligibility = {

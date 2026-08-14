@@ -34,11 +34,13 @@ const navItems = [
 type SavedCampaign = {
   id: string;
   name: string;
-  status: "active" | "draft";
+  status: "active" | "draft" | "paused";
   sourceCode: "usuarios_sdr" | "clinica_nova";
   sourceName: string;
   stepCount: number;
   autoEnroll: boolean;
+  enrollmentCount: number;
+  scheduledCount: number;
 };
 
 type CampaignDetail = {
@@ -136,15 +138,16 @@ export function FollowupDashboard() {
   const [activeNav, setActiveNav] = useState("Visão geral");
   const [source, setSource] = useState<"usuarios_sdr" | "clinica_nova">("usuarios_sdr");
   const [campaignName, setCampaignName] = useState("Novos leads · Estética");
-  const [isActive, setIsActive] = useState(true);
   const [autoEnroll, setAutoEnroll] = useState(false);
   const [steps, setSteps] = useState(initialSteps);
   const [savedCampaigns, setSavedCampaigns] = useState<SavedCampaign[]>([]);
+  const [campaignComposerOpen, setCampaignComposerOpen] = useState(false);
   const [editingCampaignId, setEditingCampaignId] = useState<string | null>(null);
+  const [editingCampaignStatus, setEditingCampaignStatus] = useState<SavedCampaign["status"]>("draft");
   const [editingStructureLocked, setEditingStructureLocked] = useState(false);
   const [viewedCampaign, setViewedCampaign] = useState<CampaignDetail | null>(null);
   const [campaignTest, setCampaignTest] = useState<CampaignTestConfig | null>(null);
-  const [campaignAction, setCampaignAction] = useState<"idle" | "loading" | "deleting">("idle");
+  const [campaignAction, setCampaignAction] = useState<"idle" | "loading" | "deleting" | "status">("idle");
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [databaseLeads, setDatabaseLeads] = useState<LeadRow[]>([]);
   const [csvLeads, setCsvLeads] = useState<LeadRow[]>([]);
@@ -161,7 +164,7 @@ export function FollowupDashboard() {
   const [leadMessage, setLeadMessage] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveMessage, setSaveMessage] = useState("");
-  const totalHours = useMemo(() => steps.reduce((total, step) => total + step.delay, 0), [steps]);
+  const totalHours = useMemo(() => Math.max(0, ...steps.map((step) => step.delay)), [steps]);
   const filteredLibraryItems = useMemo(() => {
     const term = libraryQuery.trim().toLocaleLowerCase("pt-BR");
     return libraryItems.filter((item) => {
@@ -207,10 +210,10 @@ export function FollowupDashboard() {
       const sender = { sender_1: "Unidade 1", sender_2: "Unidade 2", balanced: "Balanceado" } as const;
       const rotation = { no_repeat: "Sem repetir", sequential: "Sequencial", random: "Aleatória" } as const;
       setEditingCampaignId(campaign.id);
+      setEditingCampaignStatus(campaign.status as SavedCampaign["status"]);
       setEditingStructureLocked(!campaign.canEditStructure);
       setCampaignName(campaign.name);
       setSource(campaign.sourceCode);
-      setIsActive(campaign.status === "active");
       setAutoEnroll(campaign.autoEnroll);
       setSteps(campaign.steps.map((step, index) => ({
         id: index + 1,
@@ -222,6 +225,7 @@ export function FollowupDashboard() {
         mediaUrl: step.variants[0]?.mediaUrl ?? "",
       })));
       setViewedCampaign(null);
+      setCampaignComposerOpen(true);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
       setSaveMessage(error instanceof Error ? error.message : "Falha ao editar.");
@@ -246,15 +250,51 @@ export function FollowupDashboard() {
     }
   }
 
-  function cancelCampaignEdit() {
+  function resetCampaignForm() {
     setEditingCampaignId(null);
+    setEditingCampaignStatus("draft");
     setEditingStructureLocked(false);
     setCampaignName("Novos leads · Estética");
     setSource("usuarios_sdr");
-    setIsActive(true);
     setAutoEnroll(false);
     setSteps(initialSteps);
+  }
+
+  function openNewCampaign() {
+    resetCampaignForm();
     setSaveMessage("");
+    setSaveState("idle");
+    setViewedCampaign(null);
+    setCampaignTest(null);
+    setCampaignComposerOpen(true);
+  }
+
+  function cancelCampaignEdit() {
+    resetCampaignForm();
+    setCampaignComposerOpen(false);
+    setSaveMessage("");
+  }
+
+  async function toggleCampaignStatus(campaign: SavedCampaign) {
+    const nextStatus = campaign.status === "active" ? "paused" : "active";
+    if (nextStatus === "active" && !window.confirm(`Ativar “${campaign.name}”? Apenas leads recentes e elegíveis entrarão na cadência.`)) return;
+    setCampaignAction("status");
+    setSaveMessage("");
+    try {
+      const response = await fetch(`/api/campaigns/${campaign.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível alterar a campanha.");
+      await loadCampaigns();
+      setSaveMessage(nextStatus === "active" ? "Campanha ativada. Novos leads já podem entrar na cadência." : "Campanha pausada. A fila foi preservada.");
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : "Não foi possível alterar a campanha.");
+    } finally {
+      setCampaignAction("idle");
+    }
   }
 
   async function removeCampaign(campaign: SavedCampaign) {
@@ -332,6 +372,20 @@ export function FollowupDashboard() {
       setMessages((messageData as { messages: MessageRow[] }).messages);
     }).catch(() => setSaveMessage("Conecte o banco para visualizar os dados do painel."));
   }, []);
+
+  useEffect(() => {
+    if (!campaignComposerOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") cancelCampaignEdit();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [campaignComposerOpen]);
 
   async function syncLeads() {
     setLeadAction("syncing");
@@ -426,7 +480,7 @@ export function FollowupDashboard() {
         body: JSON.stringify({
           name: campaignName,
           sourceCode: source,
-          status: isActive ? "active" : "draft",
+          status: editingCampaignId ? editingCampaignStatus : "draft",
           autoEnroll,
           metadataOnly: editingStructureLocked,
           steps: steps.map((step) => ({
@@ -442,9 +496,9 @@ export function FollowupDashboard() {
       if (!response.ok) throw new Error(data.error ?? "Não foi possível salvar a campanha.");
       await loadCampaigns();
       setSaveState("saved");
-      setSaveMessage(editingCampaignId ? "Campanha atualizada com sucesso." : "Campanha salva com sucesso.");
-      setEditingCampaignId(null);
-      setEditingStructureLocked(false);
+      setSaveMessage(editingCampaignId ? "Campanha atualizada com sucesso." : "Campanha criada como rascunho. Revise e ative quando estiver pronta.");
+      resetCampaignForm();
+      setCampaignComposerOpen(false);
     } catch (error) {
       setSaveState("error");
       setSaveMessage(error instanceof Error ? error.message : "Não foi possível salvar a campanha.");
@@ -471,7 +525,7 @@ export function FollowupDashboard() {
           <div><p className="eyebrow">CENTRAL / {activeNav}</p><h1>{activeNav === "Visão geral" ? "O ritmo da operação" : activeNav}</h1></div>
           <div className="topbar-actions">
             <div className="pulse-status"><span /><div><strong>{dashboard?.controls.in_progress ?? 0} em andamento</strong><small>monitoramento contínuo</small></div></div>
-            <button className="quick-action" onClick={() => setActiveNav("Campanhas")}>+ Nova campanha</button>
+            <button className="quick-action" onClick={() => { setActiveNav("Campanhas"); openNewCampaign(); }}>+ Nova campanha</button>
             <div className="user"><span>Admin</span><div className="avatar">A</div><LogoutButton /></div>
           </div>
         </header>
@@ -492,19 +546,21 @@ export function FollowupDashboard() {
         </>}
 
         {activeNav === "Campanhas" && <>
-        <section className="builder-card">
+        {campaignComposerOpen && <section className="builder-card campaign-composer" role="dialog" aria-modal="true" aria-labelledby="campaign-composer-title">
           <div className="builder-heading">
             <div>
               <p className="eyebrow">{editingCampaignId ? "Editando campanha" : "Nova campanha"}</p>
-              <input aria-label="Nome da campanha" value={campaignName} onChange={(event) => setCampaignName(event.target.value)} />
-              <p className="builder-description">Configure quando, por qual número e com qual conteúdo cada lead receberá o follow-up.</p>
+              <input id="campaign-composer-title" aria-label="Nome da campanha" value={campaignName} onChange={(event) => setCampaignName(event.target.value)} />
+              <p className="builder-description">Configure os momentos e conteúdos. A ativação acontece separadamente, na lista de campanhas.</p>
             </div>
-            <button className={isActive ? "switch on" : "switch"} onClick={() => setIsActive(!isActive)} aria-pressed={isActive}>
-              <span /> {isActive ? "Ativa" : "Pausada"}
-            </button>
+            <button className="composer-close" onClick={cancelCampaignEdit} aria-label="Fechar criação de campanha">×</button>
+          </div>
+          <div className="composer-safety">
+            <strong>{editingCampaignId ? `Status preservado: ${editingCampaignStatus === "active" ? "ativa" : editingCampaignStatus === "paused" ? "pausada" : "rascunho"}.` : "A campanha será salva como rascunho."}</strong>
+            <span>Revise unidade, conteúdo e intervalos antes de ativar.</span>
           </div>
           {editingCampaignId && <div className={editingStructureLocked ? "edit-notice locked" : "edit-notice"}>
-            <span>{editingStructureLocked ? "Esta campanha já foi usada ou possui múltiplas variações. Somente nome, status e entrada automática podem ser alterados." : "Você pode editar toda a estrutura desta campanha."}</span>
+            <span>{editingStructureLocked ? "Esta campanha já possui histórico. Nome e entrada automática ainda podem ser ajustados; a estrutura permanece protegida." : "Você pode editar toda a estrutura desta campanha."}</span>
             <button type="button" onClick={cancelCampaignEdit}>Cancelar edição</button>
           </div>}
 
@@ -523,7 +579,7 @@ export function FollowupDashboard() {
           </div>
           <label className="auto-enroll-control">
             <input type="checkbox" checked={autoEnroll} onChange={(event) => setAutoEnroll(event.target.checked)} />
-            <span><strong>Entrada automática</strong><small>Inclui contatos elegíveis desta unidade quando a rotina de acompanhamento for executada.</small></span>
+            <span><strong>Entrada automática</strong><small>Ao ativar, começa apenas pelos leads recentes cujo primeiro horário ainda não venceu.</small></span>
           </label>
 
           <div className="steps">
@@ -531,10 +587,10 @@ export function FollowupDashboard() {
               <article className="step" key={step.id}>
                 <div className="step-number">{index + 1}</div>
                 <div className="step-main">
-                  <div className="step-title-row"><h2>Etapa {index + 1}</h2><span>Após {formatDuration(step.delay)}</span></div>
+                  <div className="step-title-row"><h2>Etapa {index + 1}</h2><span>{formatDuration(step.delay)} após a última mensagem</span></div>
                   <div className="step-controls">
-                    <label>Atraso
-                      <input type="number" min="1" max="2160" disabled={editingStructureLocked} value={step.delay} onChange={(event) => updateStep(step.id, "delay", Number(event.target.value))} /> horas
+                    <label>Momento
+                      <input type="number" min={index === 0 ? 1 : steps[index - 1].delay + 1} max="2160" disabled={editingStructureLocked} value={step.delay} onChange={(event) => updateStep(step.id, "delay", Number(event.target.value))} /> horas
                     </label>
                     <Select label="Conteúdo" value={step.kind} disabled={editingStructureLocked} options={["Texto", "Sticker + texto", "Imagem + texto"]} onChange={(value) => updateStep(step.id, "kind", value as ContentKind)} />
                     <Select label="Remetente" value={step.sender} disabled={editingStructureLocked} options={["Unidade 1", "Unidade 2", "Balanceado"]} onChange={(value) => updateStep(step.id, "sender", value as Step["sender"])} />
@@ -555,18 +611,20 @@ export function FollowupDashboard() {
           </div>
           <div className="builder-footer">
             <button className="secondary-button" disabled={editingStructureLocked} onClick={addStep}>+ Adicionar etapa</button>
-            <span>Cadência total: <strong>{formatDuration(totalHours)}</strong></span>
-            <button className="primary-button" onClick={saveCampaign} disabled={saveState === "saving"}>{saveState === "saving" ? "Salvando..." : editingCampaignId ? "Atualizar campanha" : "Salvar campanha"}</button>
+            <span>Última etapa: <strong>{formatDuration(totalHours)}</strong></span>
+            <button className="primary-button" onClick={saveCampaign} disabled={saveState === "saving"}>{saveState === "saving" ? "Salvando..." : editingCampaignId ? "Salvar alterações" : "Salvar rascunho"}</button>
           </div>
           {saveMessage && <p className={saveState === "error" ? "save-message error" : "save-message"}>{saveMessage}</p>}
-        </section>
+        </section>}
 
         <section className="saved-section">
-          <div><p className="eyebrow">Campanhas salvas</p><h2>Suas campanhas ativas</h2></div>
-          {savedCampaigns.length === 0 ? <p className="empty-state">Nenhuma campanha criada ainda.</p> : (
-            <div className="saved-list">{savedCampaigns.map((campaign) => <article className="saved-campaign" key={campaign.id}>
-              <div><strong>{campaign.name}</strong><span>{campaign.sourceName} · {campaign.stepCount} etapa{campaign.stepCount === 1 ? "" : "s"} · {campaign.autoEnroll ? "entrada automática" : "entrada manual"}</span></div>
-              <span className={campaign.status === "active" ? "campaign-status active" : "campaign-status"}>{campaign.status === "active" ? "Ativa" : "Rascunho"}</span>
+          <div className="saved-heading"><div><p className="eyebrow">Controle de cadências</p><h2>{savedCampaigns.length} campanha{savedCampaigns.length === 1 ? "" : "s"}</h2></div><div><span>{savedCampaigns.filter((campaign) => campaign.status === "active").length} ativas agora</span><button className="primary-button" onClick={openNewCampaign}>+ Criar campanha</button></div></div>
+          {saveMessage && !campaignComposerOpen && <p className={saveState === "error" ? "save-message error" : "save-message"}>{saveMessage}</p>}
+          {savedCampaigns.length === 0 ? <div className="campaign-empty"><strong>Nenhuma campanha configurada.</strong><span>Crie a primeira cadência e revise as etapas antes de ativá-la.</span><button onClick={openNewCampaign}>Criar campanha</button></div> : (
+            <div className="saved-list">{savedCampaigns.map((campaign) => <article className={`saved-campaign ${campaign.status}`} key={campaign.id}>
+              <div className="campaign-main"><span className={`campaign-status ${campaign.status}`}>{campaign.status === "active" ? "Ativa" : campaign.status === "paused" ? "Pausada" : "Rascunho"}</span><strong>{campaign.name}</strong><span>{campaign.sourceName} · {campaign.stepCount} etapa{campaign.stepCount === 1 ? "" : "s"} · {campaign.autoEnroll ? "entrada automática" : "entrada manual"}</span></div>
+              <div className="campaign-volume"><span><strong>{campaign.enrollmentCount}</strong> leads</span><span><strong>{campaign.scheduledCount}</strong> na fila</span></div>
+              <button className={`campaign-power ${campaign.status === "active" ? "on" : ""}`} onClick={() => toggleCampaignStatus(campaign)} disabled={campaignAction !== "idle"} aria-label={campaign.status === "active" ? `Pausar ${campaign.name}` : `Ativar ${campaign.name}`} aria-pressed={campaign.status === "active"}><i /><span>{campaign.status === "active" ? "Pausar" : "Ativar"}</span></button>
               <div className="campaign-actions">
                 <button onClick={() => viewCampaign(campaign.id)} disabled={campaignAction !== "idle"}>Visualizar</button>
                 <button onClick={() => editCampaign(campaign.id)} disabled={campaignAction !== "idle"}>Editar</button>

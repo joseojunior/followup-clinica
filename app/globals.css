@@ -233,3 +233,58 @@ select { min-height: 35px; padding: 0 30px 0 9px; }.source-picker select { min-w
   .login-context { min-height: 28rem; }
   .login-card { margin: 2rem 0; }
 }
+
+/* Campanhas: a lista é o centro operacional; o compositor abre como uma mesa de trabalho separada. */
+.campaign-composer {
+  position: fixed;
+  inset: 24px max(24px, 4vw);
+  z-index: 30;
+  margin: 0;
+  overflow-y: auto;
+  border-top: 4px solid var(--teal);
+  box-shadow: 0 0 0 100vmax rgba(14, 38, 39, .56), 0 28px 80px rgba(8, 32, 34, .3);
+  animation: campaign-composer-in .2s ease-out;
+}
+.campaign-composer .builder-heading { position: relative; padding-right: 54px; }
+.campaign-composer .composer-close { position: absolute; top: 0; right: 0; }
+@keyframes campaign-composer-in { from { opacity: 0; transform: translateY(12px); } }
+.composer-close { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border: 1px solid var(--line); border-radius: 6px; color: var(--ink-soft); background: var(--paper); font-size: 24px; line-height: 1; }
+.composer-close:hover { border-color: var(--teal); color: var(--teal-deep); background: var(--teal-pale); }
+.composer-safety { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 18px; padding: 11px 13px; border-left: 3px solid var(--sun); background: var(--sun-pale); color: #72551c; font-size: 11px; }
+.composer-safety span { color: #826c3e; }
+.saved-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; }
+.saved-heading > div:last-child { display: flex; align-items: center; gap: 14px; }
+.saved-heading > div:last-child > span { color: var(--ink-soft); font-size: 11px; font-weight: 750; }
+.campaign-empty { display: grid; gap: 6px; place-items: start; margin-top: 18px; padding: 28px; border: 1px dashed #a9c7c0; background: #f4faf7; color: var(--ink-soft); font-size: 12px; }
+.campaign-empty strong { color: var(--teal-deep); font-size: 14px; }
+.campaign-empty button { margin-top: 8px; border: 0; border-bottom: 1px solid currentColor; padding: 0 0 2px; color: var(--teal); background: transparent; font-size: 11px; font-weight: 850; }
+.saved-campaign { grid-template-columns: minmax(240px, 1fr) auto auto minmax(230px, auto); padding: 17px 0 17px 14px; border-left: 3px solid #cbd5d1; }
+.saved-campaign.active { border-left-color: var(--teal); }
+.saved-campaign.paused { border-left-color: var(--sun); }
+.campaign-main { min-width: 0; }
+.campaign-main .campaign-status { display: inline-block; margin: 0 0 7px; color: #60716c; }
+.campaign-main .campaign-status.active { color: var(--teal-deep); background: var(--teal-pale); }
+.campaign-main .campaign-status.paused { color: #7b5b1d; background: var(--sun-pale); }
+.campaign-volume { display: flex; gap: 14px; padding: 0 4px; }
+.saved-campaign .campaign-volume span { margin: 0; color: var(--ink-soft); font-size: 10px; text-align: center; }
+.campaign-volume strong { color: var(--ink); font: 500 22px/1 Georgia, "Times New Roman", serif; }
+.campaign-power { display: inline-grid; grid-template-columns: auto auto; align-items: center; gap: 7px; min-width: 82px; border: 1px solid #cbd8d2; border-radius: 999px; padding: 6px 9px 6px 6px; color: var(--ink-soft); background: var(--paper); font-size: 10px; font-weight: 850; }
+.campaign-power i { width: 18px; height: 18px; border-radius: 50%; background: #bdc9c5; box-shadow: inset 0 0 0 5px #eef2ef; }
+.campaign-power.on { border-color: #91c6bb; color: var(--teal-deep); background: #edf8f5; }
+.campaign-power.on i { background: var(--teal); box-shadow: inset 0 0 0 5px #cce9e2; }
+.campaign-power:disabled { opacity: .55; }
+
+@media (max-width: 1050px) {
+  .saved-campaign { grid-template-columns: minmax(220px, 1fr) auto auto; }
+  .campaign-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+@media (max-width: 640px) {
+  .campaign-composer { inset: 0; padding: 20px; border: 0; border-top: 4px solid var(--teal); }
+  .campaign-composer .builder-heading { padding-right: 48px; }
+  .composer-safety, .saved-heading, .saved-heading > div:last-child { align-items: flex-start; flex-direction: column; }
+  .saved-heading > div:last-child, .saved-heading .primary-button { width: 100%; }
+  .saved-campaign { grid-template-columns: 1fr auto; padding-left: 10px; }
+  .campaign-volume { justify-content: flex-start; padding: 5px 0; }
+  .campaign-power { justify-self: end; }
+  .campaign-actions { grid-column: 1 / -1; }
+}

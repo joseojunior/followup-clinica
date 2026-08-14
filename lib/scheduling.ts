@@ -5,6 +5,18 @@ export type SendingWindow = {
   weekdays: number[];
 };
 
+export function nextCadenceStepCandidate(input: {
+  anchor: Date;
+  now: Date;
+  currentDelayMinutes: number;
+  nextDelayMinutes: number;
+}) {
+  const absoluteCandidate = new Date(input.anchor.valueOf() + input.nextDelayMinutes * 60_000);
+  const intervalMinutes = Math.max(0, input.nextDelayMinutes - input.currentDelayMinutes);
+  const intervalCandidate = new Date(input.now.valueOf() + intervalMinutes * 60_000);
+  return new Date(Math.max(absoluteCandidate.valueOf(), intervalCandidate.valueOf()));
+}
+
 function localParts(date: Date, timezone: string) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
@@ -23,10 +35,11 @@ function timeToMinutes(value: string) {
   return hours * 60 + minutes;
 }
 
-export function nextAllowedSendAt(candidate: Date, window: SendingWindow) {
+export function nextAllowedSendAt(candidate: Date, window: SendingWindow, now = new Date()) {
   const start = timeToMinutes(window.allowedStartTime);
   const end = timeToMinutes(window.allowedEndTime);
-  const cursor = new Date(Math.ceil(candidate.valueOf() / 60_000) * 60_000);
+  const safeCandidate = new Date(Math.max(candidate.valueOf(), now.valueOf()));
+  const cursor = new Date(Math.ceil(safeCandidate.valueOf() / 60_000) * 60_000);
 
   // Uma campanha sempre possui ao menos um dia válido; oito dias cobrem a próxima janela.
   for (let minute = 0; minute <= 8 * 24 * 60; minute += 1) {

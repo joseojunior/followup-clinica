@@ -1,6 +1,6 @@
 import { getLeadEligibility, renderTemplate, type LeadSnapshot } from "@/lib/followup";
 import { getFollowupPool, withTransaction } from "@/lib/followup-db";
-import { listEligibleSourceLeads, type SourceKey } from "@/lib/source-leads";
+import { listEligibleSourceLeadsAfter, type SourceKey } from "@/lib/source-leads";
 import { nextAllowedSendAt } from "@/lib/scheduling";
 import { findOperationalLead, type LeadOrigin } from "@/lib/lead-catalog";
 
@@ -15,6 +15,8 @@ type ActiveCampaignRow = {
   allowed_start_time: string;
   allowed_end_time: string;
   weekdays: number[];
+  auto_enroll_cursor_at: string;
+  auto_enroll_cursor_chat_id: string | null;
 };
 
 function eventAnchor(lead: LeadSnapshot) {
@@ -31,7 +33,9 @@ export async function enrollActiveCampaigns(limitPerCampaign = 100) {
   const campaigns = await getFollowupPool().query<ActiveCampaignRow>(
     `SELECT c.id, c.source_id, s.code AS source_code, c.source_followup_required,
       c.max_send_attempts, first_step.delay_minutes AS first_delay_minutes,
-      c.timezone, c.allowed_start_time::text, c.allowed_end_time::text, c.weekdays
+      c.timezone, c.allowed_start_time::text, c.allowed_end_time::text, c.weekdays,
+      COALESCE(c.auto_enroll_cursor_at, c.auto_enroll_from, c.updated_at)::text AS auto_enroll_cursor_at,
+      c.auto_enroll_cursor_chat_id
      FROM followup.campaigns c
      JOIN followup.sources s ON s.id = c.source_id
      JOIN followup.campaign_steps first_step ON first_step.campaign_id = c.id AND first_step.step_order = 1
@@ -41,9 +45,11 @@ export async function enrollActiveCampaigns(limitPerCampaign = 100) {
   let enrolled = 0;
   let pendingData = 0;
   for (const campaign of campaigns.rows) {
-    const candidates = await listEligibleSourceLeads(campaign.source_code, {
+    const candidates = await listEligibleSourceLeadsAfter(campaign.source_code, {
       limit: limitPerCampaign,
       requireFollowupFlag: campaign.source_followup_required,
+      after: campaign.auto_enroll_cursor_at,
+      afterChatId: campaign.auto_enroll_cursor_chat_id,
     });
 
     for (const lead of candidates) {
@@ -98,7 +104,11 @@ export async function enrollActiveCampaigns(limitPerCampaign = 100) {
         `INSERT INTO followup.enrollments
           (source_id, source_chat_id, source_lead_id, campaign_id, state, next_send_at,
            last_error, source_snapshot, lead_id, origin_kind, anchor_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, 'database', $10)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, 'database', $10
+         WHERE NOT EXISTS (
+           SELECT 1 FROM followup.enrollments existing
+           WHERE existing.source_id = $1 AND existing.source_chat_id = $2 AND existing.campaign_id = $4
+         )
          ON CONFLICT DO NOTHING
          RETURNING id`,
         [campaign.source_id, lead.chatId, lead.leadId, campaign.id, state, nextSendAt,
@@ -114,6 +124,15 @@ export async function enrollActiveCampaigns(limitPerCampaign = 100) {
         if (state === "active") enrolled += 1;
         else pendingData += 1;
       }
+    }
+    const lastCandidate = candidates.at(-1);
+    if (lastCandidate) {
+      await getFollowupPool().query(
+        `UPDATE followup.campaigns
+         SET auto_enroll_cursor_at = $2, auto_enroll_cursor_chat_id = $3
+         WHERE id = $1`,
+        [campaign.id, lastCandidate.sourceEventAt ?? eventAnchor(lastCandidate).toISOString(), lastCandidate.chatId],
+      );
     }
   }
   return { campaigns: campaigns.rowCount ?? 0, enrolled, pendingData };

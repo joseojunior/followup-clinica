@@ -64,6 +64,11 @@ export function validateCampaignInput(value: unknown): CreateCampaignInput {
     });
     return { delayMinutes: delayHours * 60, contentMode: step.contentMode, senderRule: step.senderRule, rotationRule: step.rotationRule, variants };
   });
+  for (let index = 1; index < steps.length; index += 1) {
+    if ((steps[index].delayMinutes ?? 0) <= (steps[index - 1].delayMinutes ?? 0)) {
+      throw new Error("Cada etapa precisa acontecer depois da etapa anterior.");
+    }
+  }
 
   return { name, sourceCode: input.sourceCode as SourceCode, status: input.status, autoEnroll: input.autoEnroll, steps };
 }
@@ -102,6 +107,16 @@ export async function createCampaign(input: CreateCampaignInput) {
           [persistedStep, variantIndex + 1, contentType, variant.textTemplate ?? null, variant.mediaUrl ?? null],
         );
       }
+    }
+    if (input.status === "active" && input.autoEnroll) {
+      await client.query(
+        `UPDATE followup.campaigns
+         SET auto_enroll_from = NOW() - ($2 * INTERVAL '1 minute'),
+           auto_enroll_cursor_at = NOW() - ($2 * INTERVAL '1 minute'),
+           auto_enroll_cursor_chat_id = NULL
+         WHERE id = $1`,
+        [campaign.id, input.steps[0].delayMinutes ?? 0],
+      );
     }
     return { id: campaign.id, name: campaign.name, status: campaign.status, createdAt: campaign.created_at };
   });
@@ -185,10 +200,73 @@ export async function getCampaign(campaignId: string) {
   };
 }
 
+async function syncCampaignEnrollmentState(
+  client: import("pg").PoolClient,
+  campaignId: string,
+  status: "active" | "draft" | "paused",
+) {
+  if (status !== "active") {
+    await client.query(
+      `UPDATE followup.enrollments
+       SET state = 'paused', paused_reason = 'Campanha pausada pelo administrador', dispatch_lock_at = NULL
+       WHERE campaign_id = $1 AND state = 'active'`,
+      [campaignId],
+    );
+    await client.query(
+      `UPDATE followup.lead_followup_control control
+       SET control_status = 'paused'
+       FROM followup.enrollments enrollment
+       WHERE enrollment.campaign_id = $1 AND control.lead_id = enrollment.lead_id
+         AND enrollment.state = 'paused'
+         AND enrollment.paused_reason = 'Campanha pausada pelo administrador'`,
+      [campaignId],
+    );
+    return;
+  }
+
+  await client.query(
+    `UPDATE followup.enrollments enrollment
+     SET state = 'active',
+       next_send_at = CASE
+         WHEN EXISTS (SELECT 1 FROM followup.messages message WHERE message.enrollment_id = enrollment.id AND message.state = 'scheduled')
+           THEN enrollment.next_send_at
+         ELSE COALESCE(enrollment.next_send_at, control.next_followup_at, NOW())
+       END,
+       paused_reason = NULL
+     FROM followup.lead_followup_control control
+     WHERE enrollment.campaign_id = $1
+       AND enrollment.lead_id = control.lead_id
+       AND enrollment.state = 'paused'
+       AND enrollment.paused_reason = 'Campanha pausada pelo administrador'`,
+    [campaignId],
+  );
+  await client.query(
+    `UPDATE followup.lead_followup_control control
+     SET control_status = 'in_progress'
+     FROM followup.enrollments enrollment
+     WHERE enrollment.campaign_id = $1
+       AND control.lead_id = enrollment.lead_id
+       AND enrollment.state = 'active'`,
+    [campaignId],
+  );
+}
+
+async function resetAutoEnrollmentCursor(client: import("pg").PoolClient, campaignId: string) {
+  await client.query(
+    `UPDATE followup.campaigns campaign
+     SET auto_enroll_from = NOW() - (step.delay_minutes * INTERVAL '1 minute'),
+       auto_enroll_cursor_at = NOW() - (step.delay_minutes * INTERVAL '1 minute'),
+       auto_enroll_cursor_chat_id = NULL
+     FROM followup.campaign_steps step
+     WHERE campaign.id = $1 AND step.campaign_id = campaign.id AND step.step_order = 1`,
+    [campaignId],
+  );
+}
+
 export async function updateCampaign(campaignId: string, input: UpdateCampaignInput) {
   return withTransaction(async (client) => {
     const campaign = await client.query(
-      `SELECT c.id,
+      `SELECT c.id, c.status, c.auto_enroll,
         (SELECT COUNT(*)::int FROM followup.enrollments e WHERE e.campaign_id = c.id) AS enrollment_count
        FROM followup.campaigns c WHERE c.id = $1 FOR UPDATE`,
       [campaignId],
@@ -212,57 +290,48 @@ export async function updateCampaign(campaignId: string, input: UpdateCampaignIn
       await client.query("DELETE FROM followup.campaign_steps WHERE campaign_id = $1", [campaignId]);
       await insertCampaignSteps(client, campaignId, input.steps);
     }
-    if (structureLocked && input.status !== "active") {
-      await client.query(
-        `UPDATE followup.messages message
-         SET state = 'cancelled', cancelled_at = NOW(), cancel_reason = 'Campanha pausada pelo administrador'
-         FROM followup.enrollments enrollment
-         WHERE message.enrollment_id = enrollment.id
-           AND enrollment.campaign_id = $1
-           AND message.state IN ('scheduled', 'reserved')`,
-        [campaignId],
-      );
-      await client.query(
-        `UPDATE followup.enrollments
-         SET state = 'paused', paused_reason = 'Campanha pausada pelo administrador', dispatch_lock_at = NULL
-         WHERE campaign_id = $1 AND state = 'active'`,
-        [campaignId],
-      );
-      await client.query(
-        `UPDATE followup.lead_followup_control control
-         SET control_status = 'paused'
-         FROM followup.enrollments enrollment
-         WHERE enrollment.campaign_id = $1 AND control.lead_id = enrollment.lead_id`,
-        [campaignId],
-      );
-    } else if (structureLocked && input.status === "active") {
-      await client.query(
-        `UPDATE followup.enrollments enrollment
-         SET state = 'active',
-           next_send_at = COALESCE(enrollment.next_send_at, control.next_followup_at, NOW()),
-           paused_reason = NULL
-         FROM followup.lead_followup_control control
-         WHERE enrollment.campaign_id = $1
-           AND enrollment.lead_id = control.lead_id
-           AND enrollment.state = 'paused'
-           AND enrollment.paused_reason = 'Campanha pausada pelo administrador'`,
-        [campaignId],
-      );
-      await client.query(
-        `UPDATE followup.lead_followup_control control
-         SET control_status = 'in_progress'
-         FROM followup.enrollments enrollment
-         WHERE enrollment.campaign_id = $1
-           AND control.lead_id = enrollment.lead_id
-           AND enrollment.state = 'active'`,
-        [campaignId],
-      );
+    await syncCampaignEnrollmentState(client, campaignId, input.status);
+    if (input.status === "active" && input.autoEnroll
+      && (campaign.rows[0].status !== "active" || campaign.rows[0].auto_enroll !== true)) {
+      await resetAutoEnrollmentCursor(client, campaignId);
     }
     await client.query(
       "INSERT INTO followup.audit_log (entity_type, entity_id, action, metadata) VALUES ('campaign', $1, 'updated', $2::jsonb)",
       [campaignId, JSON.stringify({ metadataOnly: structureLocked || input.metadataOnly === true })],
     );
     return { id: campaignId, structureLocked: structureLocked || input.metadataOnly === true };
+  });
+}
+
+export async function setCampaignStatus(campaignId: string, status: "active" | "paused") {
+  return withTransaction(async (client) => {
+    const campaign = await client.query(
+      `SELECT id, status, auto_enroll,
+        (SELECT COUNT(*)::int FROM followup.campaign_steps step WHERE step.campaign_id = campaigns.id AND step.is_active = true) AS step_count,
+        (SELECT COUNT(DISTINCT step.id)::int
+         FROM followup.campaign_steps step
+         JOIN followup.content_variants variant ON variant.step_id = step.id AND variant.is_active = true
+         WHERE step.campaign_id = campaigns.id AND step.is_active = true) AS ready_step_count
+       FROM followup.campaigns campaigns WHERE id = $1 FOR UPDATE`,
+      [campaignId],
+    );
+    if (!campaign.rowCount) throw new Error("Campanha não encontrada.");
+    const row = campaign.rows[0];
+    if (status === "active" && (row.step_count === 0 || row.ready_step_count !== row.step_count)) {
+      throw new Error("Adicione conteúdo ativo em todas as etapas antes de ativar a campanha.");
+    }
+    if (row.status === status) return { id: campaignId, status };
+
+    await client.query("UPDATE followup.campaigns SET status = $2 WHERE id = $1", [campaignId, status]);
+    await syncCampaignEnrollmentState(client, campaignId, status);
+    if (status === "active" && row.auto_enroll === true) {
+      await resetAutoEnrollmentCursor(client, campaignId);
+    }
+    await client.query(
+      "INSERT INTO followup.audit_log (entity_type, entity_id, action, metadata) VALUES ('campaign', $1, $2, $3::jsonb)",
+      [campaignId, status === "active" ? "activated" : "paused", JSON.stringify({ previousStatus: row.status })],
+    );
+    return { id: campaignId, status };
   });
 }
 
@@ -315,7 +384,11 @@ export async function deleteCampaign(campaignId: string) {
 export async function listCampaigns() {
   const result = await getFollowupPool().query(
     `SELECT c.id, c.name, c.status, c.auto_enroll, c.created_at, s.code AS source_code, s.name AS source_name,
-      COUNT(cs.id)::int AS step_count
+      COUNT(cs.id)::int AS step_count,
+      (SELECT COUNT(*)::int FROM followup.enrollments enrollment WHERE enrollment.campaign_id = c.id) AS enrollment_count,
+      (SELECT COUNT(*)::int FROM followup.messages message
+       JOIN followup.enrollments enrollment ON enrollment.id = message.enrollment_id
+       WHERE enrollment.campaign_id = c.id AND message.state = 'scheduled') AS scheduled_count
      FROM followup.campaigns c
      JOIN followup.sources s ON s.id = c.source_id
      LEFT JOIN followup.campaign_steps cs ON cs.campaign_id = c.id
@@ -331,6 +404,8 @@ export async function listCampaigns() {
     sourceName: row.source_name,
     autoEnroll: row.auto_enroll,
     stepCount: row.step_count,
+    enrollmentCount: row.enrollment_count,
+    scheduledCount: row.scheduled_count,
     createdAt: row.created_at,
   }));
 }

@@ -58,6 +58,7 @@ function toSnapshot(row: Record<string, unknown>): LeadSnapshot {
     sourceFollowupStage: typeof row.followup_stage === "number" ? row.followup_stage : null,
     sourceLegacyFollowupStage: typeof row.legacy_followup_stage === "string" ? row.legacy_followup_stage : null,
     sourceFollowupDate: asIso(row.followup_date),
+    sourceEventAt: typeof row.source_event_at === "string" ? row.source_event_at : null,
   };
 }
 
@@ -99,6 +100,39 @@ export async function listEligibleSourceLeads(
     ORDER BY created_at ASC
     LIMIT $2`,
     [requireFollowupFlag, limit],
+  );
+
+  return result.rows.map(toSnapshot);
+}
+
+export async function listEligibleSourceLeadsAfter(
+  sourceKey: SourceKey,
+  options: {
+    limit?: number;
+    requireFollowupFlag?: boolean;
+    after: string;
+    afterChatId?: string | null;
+  },
+): Promise<LeadSnapshot[]> {
+  const source = sourceDefinitions[sourceKey];
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  const requireFollowupFlag = options.requireFollowupFlag !== false;
+  const anchor = "COALESCE(NULLIF(last_ai_message_data::text, '')::timestamptz, created_at)";
+  const result = await getSourcePool(sourceKey).query(
+    `SELECT
+      chat_id, lead_id, nome, telefone, email, transferido, agendado, followup,
+      status_conversa, tratamento_principal, status_qualificacao, localizacao,
+      tipo_atendimento, last_ai_message_data, created_at, ${anchor}::text AS source_event_at,
+      ${sourceControlColumns(sourceKey)}
+    FROM ${source.table}
+    WHERE COALESCE(agendado, false) = false
+      AND COALESCE(transferido, false) = false
+      AND ($1::boolean = false OR followup = true)
+      AND (${anchor} > $2::timestamptz
+        OR (${anchor} = $2::timestamptz AND chat_id > $3::text))
+    ORDER BY ${anchor} ASC, chat_id ASC
+    LIMIT $4`,
+    [requireFollowupFlag, options.after, options.afterChatId ?? "", limit],
   );
 
   return result.rows.map(toSnapshot);

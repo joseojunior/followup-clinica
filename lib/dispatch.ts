@@ -3,7 +3,7 @@ import { getFollowupPool, withTransaction } from "@/lib/followup-db";
 import { type SourceKey } from "@/lib/source-leads";
 import { sendWithUazapi } from "@/lib/uazapi";
 import { reserveSenderSlot } from "@/lib/sender-throttle";
-import { nextAllowedSendAt } from "@/lib/scheduling";
+import { nextAllowedSendAt, nextCadenceStepCandidate } from "@/lib/scheduling";
 import { findOperationalLead, type LeadOrigin } from "@/lib/lead-catalog";
 
 type ClaimedMessage = {
@@ -23,6 +23,7 @@ type ClaimedMessage = {
   origin_kind: LeadOrigin;
   current_step_order: number;
   credential_key: string;
+  source_followup_required: boolean;
 };
 
 async function claimMessages(limit: number) {
@@ -31,9 +32,13 @@ async function claimMessages(limit: number) {
       `WITH selected AS (
         SELECT m.id
         FROM followup.messages m
+        JOIN followup.enrollments selected_enrollment ON selected_enrollment.id = m.enrollment_id
+        JOIN followup.campaigns selected_campaign ON selected_campaign.id = selected_enrollment.campaign_id
         WHERE m.state = 'scheduled'
           AND m.scheduled_at <= NOW()
           AND (m.next_retry_at IS NULL OR m.next_retry_at <= NOW())
+          AND selected_enrollment.state = 'active'
+          AND selected_campaign.status = 'active'
         ORDER BY m.scheduled_at
         FOR UPDATE SKIP LOCKED
         LIMIT $1
@@ -48,7 +53,7 @@ async function claimMessages(limit: number) {
         AND se.id = m.sender_id
       RETURNING m.id, m.enrollment_id, m.step_id, m.variant_id, m.sender_id, m.phone, m.content_snapshot,
         m.attempt_count, c.max_send_attempts, e.source_id, so.code AS source_code, e.source_chat_id,
-        e.current_step_order, e.lead_id, e.origin_kind, se.credential_key`,
+        e.current_step_order, e.lead_id, e.origin_kind, se.credential_key, c.source_followup_required`,
       [Math.min(Math.max(limit, 1), 100)],
     );
     return result.rows;
@@ -59,7 +64,7 @@ async function markSuccess(message: ClaimedMessage, providerMessageId: string | 
   await withTransaction(async (client) => {
     await client.query(
       `UPDATE followup.messages
-       SET state = 'sent', sent_at = NOW(), delivered_at = NOW(), provider_message_id = $2,
+       SET state = 'sent', sent_at = NOW(), provider_message_id = $2,
          provider_response = $3::jsonb, error_message = NULL, next_retry_at = NULL
        WHERE id = $1`,
       [message.id, providerMessageId, JSON.stringify(providerResponse)],
@@ -72,14 +77,16 @@ async function markSuccess(message: ClaimedMessage, providerMessageId: string | 
       );
     }
     const nextStep = await client.query(
-      `SELECT cs.delay_minutes, c.timezone, c.allowed_start_time::text,
+      `SELECT cs.delay_minutes, current_step.delay_minutes AS current_delay_minutes,
+        c.timezone, c.allowed_start_time::text,
         c.allowed_end_time::text, c.weekdays, enrollment.anchor_at
        FROM followup.campaign_steps cs
        JOIN followup.campaigns c ON c.id = cs.campaign_id
        JOIN followup.enrollments enrollment ON enrollment.id = $1
+       JOIN followup.campaign_steps current_step ON current_step.id = $3
        WHERE cs.campaign_id = (SELECT campaign_id FROM followup.enrollments WHERE id = $1)
          AND cs.step_order = $2 AND cs.is_active = true`,
-      [message.enrollment_id, message.current_step_order + 1],
+      [message.enrollment_id, message.current_step_order + 1, message.step_id],
     );
     if (!nextStep.rowCount) {
       await client.query("UPDATE followup.enrollments SET state = 'completed', completed_at = NOW(), dispatch_lock_at = NULL WHERE id = $1", [message.enrollment_id]);
@@ -93,8 +100,14 @@ async function markSuccess(message: ClaimedMessage, providerMessageId: string | 
       );
     } else {
       const step = nextStep.rows[0];
+      const now = new Date();
       const nextSendAt = nextAllowedSendAt(
-        new Date(new Date(step.anchor_at).valueOf() + step.delay_minutes * 60_000),
+        nextCadenceStepCandidate({
+          anchor: new Date(step.anchor_at),
+          now,
+          currentDelayMinutes: step.current_delay_minutes,
+          nextDelayMinutes: step.delay_minutes,
+        }),
         {
           timezone: step.timezone,
           allowedStartTime: step.allowed_start_time,
@@ -168,6 +181,17 @@ async function markFailure(message: ClaimedMessage, error: Error) {
 }
 
 export async function dispatchScheduledMessages(limit = 5) {
+  if (process.env.FOLLOWUP_SEND_MODE !== "live") {
+    const held = await getFollowupPool().query(
+      `SELECT COUNT(*)::int AS count
+       FROM followup.messages message
+       JOIN followup.enrollments enrollment ON enrollment.id = message.enrollment_id
+       JOIN followup.campaigns campaign ON campaign.id = enrollment.campaign_id
+       WHERE message.state = 'scheduled' AND message.scheduled_at <= NOW()
+         AND enrollment.state = 'active' AND campaign.status = 'active'`,
+    );
+    return { claimed: 0, sent: 0, simulated: 0, cancelled: 0, failed: 0, held: held.rows[0].count };
+  }
   const messages = await claimMessages(limit);
   let sent = 0;
   let simulated = 0;
@@ -176,7 +200,9 @@ export async function dispatchScheduledMessages(limit = 5) {
 
   for (const message of messages) {
     const lead = await findOperationalLead(message.origin_kind, message.source_code, message.source_chat_id, message.lead_id);
-    const eligibility = lead ? getLeadEligibility(lead) : { eligible: false, reason: "Lead não encontrado na fonte" };
+    const eligibility = lead
+      ? getLeadEligibility(lead, { requireFollowupFlag: message.source_followup_required })
+      : { eligible: false, reason: "Lead não encontrado na fonte" };
     if (!eligibility.eligible) {
       await withTransaction(async (client) => {
         await client.query("UPDATE followup.messages SET state = 'cancelled', cancelled_at = NOW(), cancel_reason = $2 WHERE id = $1", [message.id, eligibility.reason]);
@@ -191,19 +217,16 @@ export async function dispatchScheduledMessages(limit = 5) {
     }
 
     try {
-      if (process.env.FOLLOWUP_SEND_MODE === "live") {
-        const slot = await reserveSenderSlot(message.sender_id);
-        if (!slot.allowed) {
-          await rescheduleForSenderLimit(message, slot.availableAt, slot.reason ?? "Aguardando a unidade remetente");
-          continue;
-        }
+      const slot = await reserveSenderSlot(message.sender_id);
+      if (!slot.allowed) {
+        await rescheduleForSenderLimit(message, slot.availableAt, slot.reason ?? "Aguardando a unidade remetente");
+        continue;
       }
       const token = process.env[message.credential_key];
       if (!token) throw new Error(`Credencial ${message.credential_key} ausente.`);
       const result = await sendWithUazapi(token, message.phone, message.content_snapshot);
       await markSuccess(message, result.providerMessageId, result.response);
-      if (process.env.FOLLOWUP_SEND_MODE === "live") sent += 1;
-      else simulated += 1;
+      sent += 1;
     } catch (error) {
       await markFailure(message, error instanceof Error ? error : new Error("Falha de envio desconhecida."));
       failed += 1;
