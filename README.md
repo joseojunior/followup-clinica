@@ -104,8 +104,9 @@ Para Docker Swarm, use `docker-stack.swarm.yml`. Ele cria `followup_web`,
 
 Antes de criar a Stack, publique a imagem no registry que todos os nós do Swarm
 conseguem acessar e defina `FOLLOWUP_IMAGE`, por exemplo
-`ghcr.io/sua-organizacao/followup-clinica:1.0.0`. Cadastre também `FOLLOWUP_HOST`
-e as demais variáveis do `.env.example` no Portainer. Não coloque tokens ou senhas
+`ghcr.io/sua-organizacao/followup-clinica:1.0.0`. Cadastre também
+`FOLLOWUP_APP_HOST`, `FOLLOWUP_API_HOST` e as demais variáveis do `.env.example`
+no Portainer. Não coloque tokens ou senhas
 diretamente no YAML.
 
 O workflow `.github/workflows/publish-container.yml` publica automaticamente no GHCR

@@ -90,7 +90,9 @@ export async function dispatchBroadcasts(limit = 5) {
       `WITH candidates AS (
          SELECT r.id FROM followup.broadcast_recipients r
          JOIN followup.broadcast_campaigns b ON b.id = r.broadcast_campaign_id
+         JOIN followup.senders selected_sender ON selected_sender.id = b.sender_id
          WHERE r.state = 'scheduled' AND b.status = 'scheduled' AND b.scheduled_at <= NOW()
+           AND selected_sender.provider_status = 'connected'
          ORDER BY b.scheduled_at, r.created_at FOR UPDATE SKIP LOCKED LIMIT $1
        )
        UPDATE followup.broadcast_recipients r SET state = 'sending'

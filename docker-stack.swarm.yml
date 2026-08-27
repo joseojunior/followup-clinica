@@ -63,11 +63,16 @@ services:
           memory: 512M
       labels:
         - traefik.enable=true
-        - traefik.http.routers.followup.rule=Host(`${FOLLOWUP_HOST}`)
-        - traefik.http.routers.followup.entrypoints=websecure
-        - traefik.http.routers.followup.tls.certresolver=letsencryptresolver
-        - traefik.http.services.followup.loadbalancer.server.port=3000
-        - traefik.http.services.followup.loadbalancer.passHostHeader=1
+        - traefik.http.routers.followup-panel.rule=Host(`${FOLLOWUP_APP_HOST:-app.leticiaatd.online}`)
+        - traefik.http.routers.followup-panel.entrypoints=websecure
+        - traefik.http.routers.followup-panel.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.followup-panel.service=followup-web
+        - traefik.http.routers.followup-api.rule=Host(`${FOLLOWUP_API_HOST:-followapi.leticiaatd.online}`) && PathPrefix(`/api`)
+        - traefik.http.routers.followup-api.entrypoints=websecure
+        - traefik.http.routers.followup-api.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.followup-api.service=followup-web
+        - traefik.http.services.followup-web.loadbalancer.server.port=3000
+        - traefik.http.services.followup-web.loadbalancer.passHostHeader=1
 
   followup_worker:
     image: ${FOLLOWUP_IMAGE}

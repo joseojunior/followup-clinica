@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { dispatchScheduledMessages } from "@/lib/dispatch";
 import { dispatchBroadcasts } from "@/lib/broadcasts";
 import { enrollActiveCampaigns, queueDueMessages } from "@/lib/control-plane";
+import { refreshAllSenderConnections } from "@/lib/uazapi-connections";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({})) as { action?: string; limit?: number };
     const limit = Number.isFinite(body.limit) ? Math.max(1, Math.min(200, Number(body.limit))) : undefined;
+    if (body.action === "connections") return NextResponse.json({ connections: await refreshAllSenderConnections() });
     if (body.action === "enroll") return NextResponse.json(await enrollActiveCampaigns(limit));
     if (body.action === "queue") return NextResponse.json(await queueDueMessages(limit));
     if (body.action === "dispatch") return NextResponse.json(await dispatchScheduledMessages(limit));

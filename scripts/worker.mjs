@@ -35,6 +35,7 @@ async function tick() {
   if (running) return;
   running = true;
   try {
+    const connectionsRun = await executeSafely("connections");
     const shouldEnroll = Date.now() - lastEnrollmentAt >= enrollMilliseconds;
     const enrollmentRun = shouldEnroll
       ? await executeSafely("enroll")
@@ -50,7 +51,10 @@ async function tick() {
     const activity = (enrolled.enrolled || 0) + (queued.queued || 0) +
       (dispatched.sent || 0) + (dispatched.simulated || 0) +
       (broadcasts.sent || 0) + (broadcasts.simulated || 0);
-    if (activity || shouldEnroll) console.log(new Date().toISOString(), { enrolled, queued, dispatched, broadcasts });
+    const disconnected = connectionsRun.ok
+      ? (connectionsRun.result.connections || []).filter((connection) => connection.status !== "connected").map((connection) => connection.code)
+      : ["monitor_unavailable"];
+    if (activity || shouldEnroll || disconnected.length) console.log(new Date().toISOString(), { disconnected, enrolled, queued, dispatched, broadcasts });
   } catch (error) {
     console.error(new Date().toISOString(), error instanceof Error ? error.message : error);
   } finally {

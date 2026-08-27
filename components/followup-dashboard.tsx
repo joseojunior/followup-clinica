@@ -28,6 +28,7 @@ const navItems = [
   { label: "Disparo único", mark: "➤" },
   { label: "Leads", mark: "◎" },
   { label: "Biblioteca", mark: "✦" },
+  { label: "Conexões", mark: "⌁" },
   { label: "Histórico", mark: "≋" },
   { label: "Pendências", mark: "!" },
 ];
@@ -134,6 +135,22 @@ type BroadcastSetup = {
   senders: Array<{ code: "sender_1" | "sender_2"; name: string; whatsapp_number: string | null }>;
   broadcasts: Array<{ id: string; name: string; status: string; scheduled_at: string; created_at: string; recipients: number; sent: number; failed: number }>;
 };
+type ConnectionStatus = "connected" | "connecting" | "disconnected" | "hibernated" | "unavailable" | "unknown";
+type SenderConnection = {
+  code: "sender_1" | "sender_2";
+  name: string;
+  whatsappNumber: string | null;
+  instanceName: string | null;
+  profileName: string | null;
+  profilePicUrl: string | null;
+  status: ConnectionStatus;
+  checkedAt: string | null;
+  statusChangedAt: string | null;
+  lastDisconnectAt: string | null;
+  lastDisconnectReason: string | null;
+  error: string | null;
+  qrcode?: string | null;
+};
 
 export function FollowupDashboard() {
   const [activeNav, setActiveNav] = useState("Visão geral");
@@ -158,6 +175,9 @@ export function FollowupDashboard() {
   const [libraryFilter, setLibraryFilter] = useState<"all" | LibraryItem["content_type"]>("all");
   const [broadcastSetup, setBroadcastSetup] = useState<BroadcastSetup>({ senders: [], broadcasts: [] });
   const [broadcastMessage, setBroadcastMessage] = useState("");
+  const [connections, setConnections] = useState<SenderConnection[]>([]);
+  const [connectionAction, setConnectionAction] = useState<string | null>(null);
+  const [connectionMessage, setConnectionMessage] = useState("");
   const [leadSource, setLeadSource] = useState<"usuarios_sdr" | "clinica_nova">("usuarios_sdr");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [enrollCampaign, setEnrollCampaign] = useState("");
@@ -340,6 +360,37 @@ export function FollowupDashboard() {
     setBroadcastSetup(await response.json() as BroadcastSetup);
   }
 
+  async function loadConnections(showProgress = false) {
+    if (showProgress) setConnectionAction("refresh");
+    try {
+      const response = await fetch("/api/connections", { cache: "no-store" });
+      const data = await response.json() as { connections?: SenderConnection[]; error?: string };
+      if (!response.ok || !data.connections) throw new Error(data.error ?? "Não foi possível consultar as conexões.");
+      setConnections(data.connections);
+      setConnectionMessage("");
+    } catch (error) {
+      setConnectionMessage(error instanceof Error ? error.message : "Falha ao atualizar as conexões.");
+    } finally {
+      if (showProgress) setConnectionAction(null);
+    }
+  }
+
+  async function connectWhatsapp(senderCode: SenderConnection["code"]) {
+    setConnectionAction(senderCode);
+    setConnectionMessage("");
+    try {
+      const response = await fetch(`/api/connections/${senderCode}/connect`, { method: "POST" });
+      const data = await response.json() as { connection?: SenderConnection; error?: string };
+      if (!response.ok || !data.connection) throw new Error(data.error ?? "Não foi possível gerar o QR Code.");
+      setConnections((current) => current.map((item) => item.code === senderCode ? data.connection! : item));
+      setConnectionMessage(data.connection.status === "connected" ? "Esta clínica já está conectada." : "QR Code gerado. Abra o WhatsApp no celular e escaneie para concluir.");
+    } catch (error) {
+      setConnectionMessage(error instanceof Error ? error.message : "Falha ao iniciar a conexão.");
+    } finally {
+      setConnectionAction(null);
+    }
+  }
+
   async function createBroadcast(input: { name: string; senderCode: string; leadIds: string[]; text: string; scheduledAt: string }) {
     setBroadcastMessage("");
     const response = await fetch("/api/broadcasts", {
@@ -365,6 +416,7 @@ export function FollowupDashboard() {
       fetch("/api/messages").then((response) => response.ok ? response.json() : Promise.reject()),
       loadLibrary(),
       loadBroadcastSetup(),
+      loadConnections(),
     ]).then(([, dashboardData, leadData, messageData]) => {
       setDashboard(dashboardData as DashboardData);
       const catalog = leadData as { databaseLeads: LeadRow[]; csvLeads: LeadRow[] };
@@ -372,6 +424,11 @@ export function FollowupDashboard() {
       setCsvLeads(catalog.csvLeads);
       setMessages((messageData as { messages: MessageRow[] }).messages);
     }).catch(() => setSaveMessage("Conecte o banco para visualizar os dados do painel."));
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => loadConnections(), 15_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -518,6 +575,9 @@ export function FollowupDashboard() {
     }
   }
 
+  const connectedCount = connections.filter((connection) => connection.status === "connected").length;
+  const connectionAlerts = connections.filter((connection) => connection.status !== "connected");
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -530,7 +590,7 @@ export function FollowupDashboard() {
             </button>
           ))}
         </nav>
-        <div className="source-status"><span className="status-dot" /><span className="sidebar-detail">OPERAÇÃO ATIVA<br /><strong>2 unidades conectadas</strong></span></div>
+        <div className={`source-status ${connectionAlerts.length ? "has-alert" : ""}`}><span className="status-dot" /><span className="sidebar-detail">LINHAS WHATSAPP<br /><strong>{connectedCount} de {connections.length || 2} conectadas</strong></span></div>
       </aside>
 
       <section className="content">
@@ -542,6 +602,13 @@ export function FollowupDashboard() {
             <div className="user"><span>Admin</span><div className="avatar">A</div><LogoutButton /></div>
           </div>
         </header>
+
+        {connectionAlerts.length > 0 && <button className="connection-alert" onClick={() => setActiveNav("Conexões")}>
+          <span aria-hidden="true">!</span>
+          <strong>{connectionAlerts.length === 1 ? "Uma clínica precisa de atenção" : `${connectionAlerts.length} clínicas precisam de atenção`}</strong>
+          <small>{connectionAlerts.map((item) => item.name).join(" · ")} — os envios dessas linhas ficam aguardando.</small>
+          <em>Ver conexões →</em>
+        </button>}
 
         {activeNav === "Visão geral" && <div className="pulse-rail" aria-label="Status da operação"><span>AGORA</span><i /><strong>{dashboard?.messages.queued ?? 0} mensagens aguardam processamento</strong><i /><span>PRÓXIMAS AÇÕES</span></div>}
 
@@ -726,6 +793,14 @@ export function FollowupDashboard() {
           onReload={loadLibrary}
         />}
 
+        {activeNav === "Conexões" && <ConnectionsPanel
+          connections={connections}
+          action={connectionAction}
+          message={connectionMessage}
+          onRefresh={() => loadConnections(true)}
+          onConnect={connectWhatsapp}
+        />}
+
         {activeNav === "Pendências" && <DataPanel hasRows={[...databaseLeads, ...csvLeads].some((lead) => Boolean(lead.state && ["paused", "blocked", "pending_data"].includes(lead.state)) || !lead.is_eligible)} title="Pendências operacionais" subtitle="Leads pausados, bloqueados ou com dados ausentes" empty="Nenhuma pendência operacional.">
           <div className="data-table">{[...databaseLeads, ...csvLeads].filter((lead) => Boolean(lead.state && ["paused", "blocked", "pending_data"].includes(lead.state)) || !lead.is_eligible).map((lead) => <article key={lead.id}><div><strong>{lead.name || lead.phone || "Contato"}</strong><small>{lead.eligibility_reason || "Verifique os dados deste contato"}</small></div><span className={`table-status ${lead.state ?? "pending_data"}`}>{lead.state ?? "pending_data"}</span></article>)}</div>
         </DataPanel>}
@@ -740,6 +815,59 @@ function Metric({ label, value, hint, alert = false }: { label: string; value: s
 
 function DataPanel({ title, subtitle, empty, children, hasRows }: { title: string; subtitle: string; empty: string; children: React.ReactNode; hasRows: boolean }) {
   return <section className="saved-section data-panel"><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div>{hasRows ? children : <p className="empty-state">{empty}</p>}</section>;
+}
+
+function ConnectionsPanel({ connections, action, message, onRefresh, onConnect }: {
+  connections: SenderConnection[];
+  action: string | null;
+  message: string;
+  onRefresh: () => void;
+  onConnect: (senderCode: SenderConnection["code"]) => void;
+}) {
+  const labels: Record<ConnectionStatus, string> = {
+    connected: "Conectado", connecting: "Aguardando leitura", disconnected: "Desconectado",
+    hibernated: "Em espera", unavailable: "Sem comunicação", unknown: "Não verificado",
+  };
+  return <section className="connections-screen">
+    <header className="connections-heading">
+      <div><p className="eyebrow">Linhas da operação</p><h2>Conexões WhatsApp</h2><p>Acompanhe cada clínica e reconecte a linha sem sair da plataforma.</p></div>
+      <button className="secondary-button" onClick={onRefresh} disabled={action === "refresh"}>{action === "refresh" ? "Verificando..." : "Verificar agora"}</button>
+    </header>
+    {message && <p className="connection-message" role="status">{message}</p>}
+    <div className="connection-grid">
+      {connections.length === 0 ? <article className="connection-empty"><strong>Consultando as linhas</strong><span>O primeiro estado aparecerá em instantes.</span></article> : connections.map((connection, index) => {
+        const disconnected = connection.status !== "connected";
+        return <article className={`connection-card ${connection.status}`} key={connection.code}>
+          <i className="line-signal" aria-hidden="true" />
+          <div className="connection-card-top">
+            <span className="unit-index">0{index + 1}</span>
+            <div><small>CLÍNICA / LINHA {index + 1}</small><h3>{connection.name}</h3></div>
+            <span className={`connection-badge ${connection.status}`}><i />{labels[connection.status]}</span>
+          </div>
+          <div className="connection-identity">
+            {connection.profilePicUrl ? <img src={connection.profilePicUrl} alt="" /> : <span>{connection.profileName?.slice(0, 1) || connection.name.slice(0, 1)}</span>}
+            <div><strong>{connection.profileName || connection.instanceName || "WhatsApp ainda não identificado"}</strong><small>{connection.whatsappNumber ? `+${connection.whatsappNumber}` : "Número disponível após conectar"}</small></div>
+          </div>
+          {connection.qrcode && connection.status === "connecting" ? <div className="qr-stage">
+            <div className="qr-frame"><img src={connection.qrcode} alt={`QR Code para conectar ${connection.name}`} /></div>
+            <div><strong>Escaneie no WhatsApp</strong><ol><li>Abra Aparelhos conectados</li><li>Toque em Conectar aparelho</li><li>Aponte para este código</li></ol></div>
+          </div> : <div className={`connection-state-copy ${connection.status}`}>
+            <strong>{connection.status === "connected" ? "Linha pronta para os envios" : connection.status === "hibernated" ? "Sessão preservada, mas pausada" : "Os envios desta linha estão aguardando"}</strong>
+            <span>{connection.error || connection.lastDisconnectReason || (disconnected ? "Gere um QR Code para restabelecer a sessão." : "A cadência seguirá usando esta clínica normalmente.")}</span>
+          </div>}
+          <dl className="connection-facts">
+            <div><dt>Última verificação</dt><dd>{connection.checkedAt ? new Date(connection.checkedAt).toLocaleString("pt-BR") : "Ainda não realizada"}</dd></div>
+            <div><dt>Última desconexão</dt><dd>{connection.lastDisconnectAt ? new Date(connection.lastDisconnectAt).toLocaleString("pt-BR") : "Sem registro"}</dd></div>
+          </dl>
+          <footer>
+            <span>{connection.status === "connected" ? "Monitoramento automático a cada 15 segundos" : "A fila permanece preservada enquanto a linha estiver fora"}</span>
+            {disconnected && <button className="primary-button" onClick={() => onConnect(connection.code)} disabled={action === connection.code}>{action === connection.code ? "Gerando..." : connection.status === "connecting" ? "Gerar novo QR" : "Conectar com QR Code"}</button>}
+          </footer>
+        </article>;
+      })}
+    </div>
+    <aside className="connection-safety"><strong>Proteção da cadência</strong><span>Uma linha desconectada não consome tentativas nem falha mensagens. Os envios retomam na próxima rodada depois da reconexão.</span></aside>
+  </section>;
 }
 
 function libraryFilterLabel(value: "all" | LibraryItem["content_type"]) {

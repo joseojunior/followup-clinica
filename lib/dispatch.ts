@@ -34,11 +34,13 @@ async function claimMessages(limit: number) {
         FROM followup.messages m
         JOIN followup.enrollments selected_enrollment ON selected_enrollment.id = m.enrollment_id
         JOIN followup.campaigns selected_campaign ON selected_campaign.id = selected_enrollment.campaign_id
+        JOIN followup.senders selected_sender ON selected_sender.id = m.sender_id
         WHERE m.state = 'scheduled'
           AND m.scheduled_at <= NOW()
           AND (m.next_retry_at IS NULL OR m.next_retry_at <= NOW())
           AND selected_enrollment.state = 'active'
           AND selected_campaign.status = 'active'
+          AND selected_sender.provider_status = 'connected'
         ORDER BY m.scheduled_at
         FOR UPDATE SKIP LOCKED
         LIMIT $1

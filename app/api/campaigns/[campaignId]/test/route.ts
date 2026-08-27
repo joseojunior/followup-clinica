@@ -77,7 +77,7 @@ export async function POST(request: Request, context: { params: Promise<{ campai
 
     const result = await getFollowupPool().query(
       `SELECT c.name AS campaign_name, sender.id AS sender_id, sender.name AS sender_name,
-        sender.credential_key, variant.id AS variant_id, variant.content_type,
+        sender.credential_key, sender.provider_status, variant.id AS variant_id, variant.content_type,
         variant.text_template, variant.media_url
        FROM followup.campaigns c
        JOIN followup.campaign_steps step ON step.campaign_id = c.id
@@ -95,6 +95,9 @@ export async function POST(request: Request, context: { params: Promise<{ campai
       return NextResponse.json({ error: "Campanha, etapa, conteúdo ou remetente não encontrado." }, { status: 404 });
     }
     const row = result.rows[0];
+    if (sendMode === "live" && row.provider_status !== "connected") {
+      return NextResponse.json({ error: `${row.sender_name} está desconectada. Reconecte o WhatsApp antes do teste.` }, { status: 409 });
+    }
     const lead: LeadSnapshot = {
       chatId: `test:${phone}`,
       leadId: null,
