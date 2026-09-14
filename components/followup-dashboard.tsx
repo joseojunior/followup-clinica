@@ -172,6 +172,10 @@ type IntelligenceInsight = {
   messageCount: number;
   toolCallCount: number;
   toolFailureCount: number;
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  calculatedCostUsd: number | null;
   analysis: {
     summary: string;
     funnelStage: string;
@@ -185,6 +189,9 @@ type IntelligenceInsight = {
 type IntelligenceData = {
   aiConfigured: boolean;
   model: string;
+  settings: { keyConfigured: boolean; keySource: "admin" | "environment" | null; encryptionReady: boolean; defaultModel: string; updatedAt: string | null };
+  models: Array<{ id: string; label: string; inputPerMillionUsd: number; outputPerMillionUsd: number; description: string }>;
+  totalCalculatedCostUsd: number;
   overview: { analyzed: number; highPriority: number; toolCalls: number; toolFailures: number };
   insights: IntelligenceInsight[];
 };
@@ -432,17 +439,18 @@ export function FollowupDashboard() {
     setIntelligence(data);
   }
 
-  async function analyzeConversation(leadId: string) {
+  async function analyzeConversation(leadId: string, model: string) {
     setIntelligenceAction("analyzing");
     setIntelligenceMessage("");
     try {
       const response = await fetch("/api/intelligence/analyze", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leadId }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leadId, model }),
       });
-      const data = await response.json() as { error?: string };
+      const data = await response.json() as { error?: string; unchanged?: boolean; usage?: { calculatedCostUsd?: number | null } };
       if (!response.ok) throw new Error(data.error ?? "Não foi possível analisar a conversa.");
       await loadIntelligence();
-      setIntelligenceMessage("Conversa analisada. Os gargalos e a próxima ação estão disponíveis abaixo.");
+      const cost = data.usage?.calculatedCostUsd;
+      setIntelligenceMessage(data.unchanged ? "A conversa não mudou desde a última análise; a leitura já salva foi mantida." : `Conversa analisada. Custo calculado: ${formatUsd(cost ?? 0)}.`);
     } catch (error) {
       setIntelligenceMessage(error instanceof Error ? error.message : "Não foi possível analisar a conversa.");
     } finally {
@@ -450,11 +458,11 @@ export function FollowupDashboard() {
     }
   }
 
-  async function askIntelligence(question: string) {
+  async function askIntelligence(question: string, model: string) {
     setIntelligenceAction("chatting");
     try {
       const response = await fetch("/api/intelligence/chat", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question }),
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question, model }),
       });
       const data = await response.json() as { answer?: string; error?: string };
       if (!response.ok || !data.answer) throw new Error(data.error ?? "Não foi possível responder agora.");
@@ -941,20 +949,59 @@ function DataPanel({ title, subtitle, empty, children, hasRows }: { title: strin
   return <section className="saved-section data-panel"><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div>{hasRows ? children : <p className="empty-state">{empty}</p>}</section>;
 }
 
+function formatUsd(value: number) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "USD", minimumFractionDigits: value < 0.01 ? 4 : 2, maximumFractionDigits: 4 }).format(value);
+}
+
 function IntelligencePanel({ data, leads, action, message, onAnalyze, onAsk }: {
   data: IntelligenceData | null;
   leads: LeadRow[];
   action: "idle" | "analyzing" | "chatting";
   message: string;
-  onAnalyze: (leadId: string) => Promise<void>;
-  onAsk: (question: string) => Promise<string>;
+  onAnalyze: (leadId: string, model: string) => Promise<void>;
+  onAsk: (question: string, model: string) => Promise<string>;
 }) {
   const [leadId, setLeadId] = useState("");
+  const [model, setModel] = useState("");
+  const [estimate, setEstimate] = useState<{ inputTokens: number; outputTokens: number; usd: number; maxOutputTokens: number } | null>(null);
+  const [estimateError, setEstimateError] = useState("");
+  const [estimating, setEstimating] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [settingsModel, setSettingsModel] = useState("");
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [savingSettings, setSavingSettings] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [chatError, setChatError] = useState("");
   const eligibleLeads = leads.filter((lead) => lead.origin_kind === "database" && Boolean(lead.source_chat_id));
+  const selectedModel = model || data?.model || "";
+
+  useEffect(() => { if (data?.model && !model) setModel(data.model); if (data?.settings.defaultModel && !settingsModel) setSettingsModel(data.settings.defaultModel); }, [data, model, settingsModel]);
+
+  async function estimateAnalysis() {
+    if (!leadId || !selectedModel) return;
+    setEstimating(true); setEstimate(null); setEstimateError("");
+    try {
+      const response = await fetch("/api/intelligence/estimate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leadId, model: selectedModel }) });
+      const payload = await response.json() as { inputTokens?: number; outputTokens?: number; usd?: number; maxOutputTokens?: number; error?: string };
+      if (!response.ok || payload.usd === undefined || payload.inputTokens === undefined || payload.outputTokens === undefined || payload.maxOutputTokens === undefined) throw new Error(payload.error ?? "Não foi possível calcular a estimativa.");
+      setEstimate({ inputTokens: payload.inputTokens, outputTokens: payload.outputTokens, usd: payload.usd, maxOutputTokens: payload.maxOutputTokens });
+    } catch (error) { setEstimateError(error instanceof Error ? error.message : "Não foi possível calcular a estimativa."); }
+    finally { setEstimating(false); }
+  }
+
+  async function saveSettings(event: React.FormEvent) {
+    event.preventDefault(); setSavingSettings(true); setSettingsMessage("");
+    try {
+      const response = await fetch("/api/intelligence/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ apiKey: apiKey || undefined, defaultModel: settingsModel }) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Não foi possível salvar a configuração.");
+      setApiKey(""); setSettingsMessage("Configuração salva. A chave não pode ser exibida novamente."); window.setTimeout(() => window.location.reload(), 800);
+    } catch (error) { setSettingsMessage(error instanceof Error ? error.message : "Não foi possível salvar a configuração."); }
+    finally { setSavingSettings(false); }
+  }
 
   async function submitQuestion(event: React.FormEvent) {
     event.preventDefault();
@@ -962,7 +1009,7 @@ function IntelligencePanel({ data, leads, action, message, onAnalyze, onAsk }: {
     setChatError("");
     setAnswer("");
     try {
-      setAnswer(await onAsk(question));
+      setAnswer(await onAsk(question, selectedModel));
     } catch (error) {
       setChatError(error instanceof Error ? error.message : "Não foi possível responder agora.");
     }
@@ -971,10 +1018,19 @@ function IntelligencePanel({ data, leads, action, message, onAnalyze, onAsk }: {
   return <section className="intelligence-screen">
     <header className="intelligence-heading">
       <div><p className="eyebrow">Leitura operacional</p><h2>Inteligência de atendimento</h2><p>Analise conversas quando precisar entender o que está travando o agendamento. Nenhuma ação é tomada automaticamente.</p></div>
-      <span className={data?.aiConfigured ? "intelligence-state ready" : "intelligence-state"}>{data?.aiConfigured ? "IA pronta" : "IA aguardando chave"}</span>
+      <div className="intelligence-heading-actions"><span className={data?.aiConfigured ? "intelligence-state ready" : "intelligence-state"}>{data?.aiConfigured ? "IA pronta" : "IA aguardando chave"}</span><button className="secondary-button" onClick={() => setSettingsOpen((current) => !current)}>Configurar IA</button></div>
     </header>
 
-    {!data?.aiConfigured && <aside className="intelligence-notice"><strong>Análise sob demanda ainda não está conectada.</strong><span>Adicione <code>OPENAI_API_KEY</code> às variáveis da Stack para liberar a análise e o chat. As conversas nunca são enviadas sem essa configuração.</span></aside>}
+    {settingsOpen && <form className="ai-settings" onSubmit={saveSettings}>
+      <div><p className="eyebrow">Painel administrativo</p><h3>Chave e modelo padrão</h3><p>A chave fica criptografada no banco; nunca volta para o navegador ou aparece depois de salva.</p></div>
+      {!data?.settings.encryptionReady && <p className="intelligence-message error">A proteção do servidor não está pronta. Defina <code>AI_SETTINGS_ENCRYPTION_KEY</code> na Stack antes de salvar uma chave.</p>}
+      <label>Chave da API OpenAI<input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={data?.settings.keyConfigured ? "Deixe vazio para manter a chave atual" : "sk-..."} disabled={!data?.settings.encryptionReady || savingSettings} /></label>
+      <label>Modelo padrão<select value={settingsModel} onChange={(event) => setSettingsModel(event.target.value)} disabled={savingSettings}>{data?.models.map((item) => <option key={item.id} value={item.id}>{item.label} — {item.description}</option>)}</select></label>
+      <div className="ai-settings-footer"><small>{data?.settings.keyConfigured ? "Chave cadastrada. Para trocar, informe uma nova." : "Nenhuma chave cadastrada."} Custos exibidos são calculados pelos tokens retornados.</small><button className="secondary-button" type="submit" disabled={!settingsModel || savingSettings || !data?.settings.encryptionReady}>{savingSettings ? "Salvando..." : "Salvar configuração"}</button></div>
+      {settingsMessage && <p className="intelligence-message" role="status">{settingsMessage}</p>}
+    </form>}
+
+    {!data?.aiConfigured && <aside className="intelligence-notice"><strong>Análise sob demanda ainda não está conectada.</strong><span>Cadastre a chave da API pelo botão “Configurar IA”. As conversas nunca são enviadas sem essa configuração.</span></aside>}
 
     <div className="intelligence-metrics">
       <Metric label="Conversas analisadas" value={String(data?.overview.analyzed ?? 0)} hint="leitura salva para consulta" />
@@ -986,19 +1042,24 @@ function IntelligencePanel({ data, leads, action, message, onAnalyze, onAsk }: {
     <section className="intelligence-analyze">
       <div><p className="eyebrow">Análise pontual</p><h3>Entender uma conversa</h3><p>Escolha um lead para criar ou atualizar a leitura da conversa dele.</p></div>
       <label>Lead
-        <select value={leadId} onChange={(event) => setLeadId(event.target.value)} disabled={!data?.aiConfigured || action !== "idle"}>
+        <select value={leadId} onChange={(event) => { setLeadId(event.target.value); setEstimate(null); }} disabled={!data?.aiConfigured || action !== "idle"}>
           <option value="">Selecione um lead com histórico</option>
           {eligibleLeads.map((lead) => <option key={lead.id} value={lead.id}>{lead.name || lead.phone || "Lead sem nome"} · {lead.source_name}</option>)}
         </select>
       </label>
-      <button className="primary-button" disabled={!leadId || !data?.aiConfigured || action !== "idle"} onClick={() => void onAnalyze(leadId)}>{action === "analyzing" ? "Analisando..." : "Analisar conversa"}</button>
+      <label>Modelo
+        <select value={selectedModel} onChange={(event) => { setModel(event.target.value); setEstimate(null); }} disabled={!data?.aiConfigured || action !== "idle"}>{data?.models.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
+      </label>
+      <div className="intelligence-run"><button className="secondary-button" disabled={!leadId || !data?.aiConfigured || action !== "idle" || estimating} onClick={() => void estimateAnalysis()}>{estimating ? "Calculando..." : "Ver estimativa"}</button><button className="primary-button" disabled={!leadId || !selectedModel || !data?.aiConfigured || action !== "idle"} onClick={() => void onAnalyze(leadId, selectedModel)}>{action === "analyzing" ? "Analisando..." : "Analisar conversa"}</button></div>
+      {estimate && <p className="intelligence-estimate">Estimativa local: até {formatUsd(estimate.usd)} · ~{estimate.inputTokens.toLocaleString("pt-BR")} tokens de entrada + até {estimate.maxOutputTokens} de saída.</p>}
+      {estimateError && <p className="intelligence-message error">{estimateError}</p>}
       {message && <p className="intelligence-message" role="status">{message}</p>}
     </section>
 
     <section className="intelligence-results">
-      <div className="intelligence-results-heading"><div><p className="eyebrow">Leituras recentes</p><h3>Onde a operação está perdendo ritmo</h3></div><span>{data?.insights.length ?? 0} análise{(data?.insights.length ?? 0) === 1 ? "" : "s"}</span></div>
+      <div className="intelligence-results-heading"><div><p className="eyebrow">Leituras recentes</p><h3>Onde a operação está perdendo ritmo</h3></div><span>{data?.insights.length ?? 0} análise{(data?.insights.length ?? 0) === 1 ? "" : "s"} · {formatUsd(data?.totalCalculatedCostUsd ?? 0)} acumulado</span></div>
       {!data?.insights.length ? <div className="intelligence-empty"><strong>Nenhuma conversa analisada ainda.</strong><span>A leitura aparecerá aqui com estágio, gargalos e próximo passo recomendado.</span></div> : <div className="intelligence-list">{data.insights.map((insight) => <article key={insight.id}>
-        <div className="intelligence-lead"><span>{insight.sourceName}</span><h4>{insight.leadName || "Lead sem nome"}</h4><small>{new Date(insight.analyzedAt).toLocaleString("pt-BR")} · {insight.messageCount} mensagens</small></div>
+        <div className="intelligence-lead"><span>{insight.sourceName}</span><h4>{insight.leadName || "Lead sem nome"}</h4><small>{new Date(insight.analyzedAt).toLocaleString("pt-BR")} · {insight.messageCount} mensagens{insight.model ? ` · ${insight.model}` : ""}</small><small>{insight.calculatedCostUsd !== null ? `Custo calculado: ${formatUsd(insight.calculatedCostUsd)}` : "Custo não registrado"}</small></div>
         <div className="intelligence-summary"><p>{insight.analysis.summary}</p><small>Próximo passo: <strong>{insight.analysis.nextAction}</strong></small></div>
         <div className="intelligence-tags"><span>{insight.analysis.funnelStage.replaceAll("_", " ")}</span><span className={`intent ${insight.analysis.intent}`}>interesse {insight.analysis.intent}</span>{insight.analysis.needsHuman && <span className="human">humano</span>}</div>
         <div className="intelligence-bottlenecks">{insight.analysis.bottlenecks.length ? insight.analysis.bottlenecks.map((bottleneck, index) => <span className={bottleneck.severity} title={bottleneck.detail} key={`${bottleneck.type}-${index}`}>{bottleneck.type}: {bottleneck.detail}</span>) : <span className="none">Sem gargalo evidente</span>}</div>
