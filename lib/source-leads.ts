@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { createHash } from "node:crypto";
 import type { LeadSnapshot } from "@/lib/followup";
 
 export const sourceDefinitions = {
@@ -15,6 +16,23 @@ export const sourceDefinitions = {
 } as const;
 
 export type SourceKey = keyof typeof sourceDefinitions;
+
+export type ConversationEvent = {
+  id: number;
+  type: "human" | "ai" | "system" | "tool" | "unknown";
+  text: string;
+  toolNames: string[];
+};
+
+export type SourceConversation = {
+  sessionId: string;
+  events: ConversationEvent[];
+  sourceHash: string;
+  humanMessageCount: number;
+  aiMessageCount: number;
+  toolCallCount: number;
+  toolFailureCount: number;
+};
 
 const sourcePools = new Map<SourceKey, Pool>();
 
@@ -103,6 +121,59 @@ export async function listEligibleSourceLeads(
   );
 
   return result.rows.map(toSnapshot);
+}
+
+function contentToText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(contentToText).filter(Boolean).join("\n");
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text.trim();
+  if (typeof record.content === "string") return record.content.trim();
+  return "";
+}
+
+function toolNames(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((tool) => {
+    if (!tool || typeof tool !== "object") return [];
+    const record = tool as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name : typeof record.tool_name === "string" ? record.tool_name : null;
+    return name ? [name] : [];
+  });
+}
+
+/** Lê o histórico apenas para análise. A fonte permanece estritamente somente leitura. */
+export async function readSourceConversation(sourceKey: SourceKey, sessionId: string): Promise<SourceConversation> {
+  const result = await getSourcePool(sourceKey).query<{ id: number; message: Record<string, unknown> }>(
+    `SELECT id, message
+     FROM public.n8n_chat_histories
+     WHERE session_id = $1
+     ORDER BY id DESC
+     LIMIT 120`,
+    [sessionId],
+  );
+  const events = result.rows.reverse().map((row) => {
+    const rawType = row.message?.type;
+    const type = rawType === "human" || rawType === "ai" || rawType === "system" || rawType === "tool" ? rawType : "unknown";
+    return {
+      id: row.id,
+      type,
+      text: contentToText(row.message?.content),
+      toolNames: toolNames(row.message?.tool_calls),
+    } satisfies ConversationEvent;
+  });
+  const combined = events.map((event) => `${event.id}|${event.type}|${event.text}|${event.toolNames.join(",")}`).join("\n");
+  const toolEvents = events.filter((event) => event.type === "tool");
+  return {
+    sessionId,
+    events,
+    sourceHash: createHash("sha256").update(combined).digest("hex"),
+    humanMessageCount: events.filter((event) => event.type === "human").length,
+    aiMessageCount: events.filter((event) => event.type === "ai").length,
+    toolCallCount: events.reduce((total, event) => total + event.toolNames.length, 0) + toolEvents.length,
+    toolFailureCount: toolEvents.filter((event) => /\b(erro|error|falha|failed|indispon[ií]vel|invalid)\b/i.test(event.text)).length,
+  };
 }
 
 export async function listEligibleSourceLeadsAfter(

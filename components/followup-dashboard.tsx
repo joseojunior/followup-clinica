@@ -28,6 +28,7 @@ const navItems = [
   { label: "Disparo único", mark: "➤" },
   { label: "Leads", mark: "◎" },
   { label: "Biblioteca", mark: "✦" },
+  { label: "Inteligência", mark: "◌" },
   { label: "Conexões", mark: "⌁" },
   { label: "Histórico", mark: "≋" },
   { label: "Pendências", mark: "!" },
@@ -110,6 +111,7 @@ type LeadRow = {
   origin_kind: "database" | "csv";
   source_code: "usuarios_sdr" | "clinica_nova";
   source_name: string;
+  source_chat_id: string | null;
   campaign_name: string | null;
   state: string | null;
   current_step_order: number | null;
@@ -160,6 +162,32 @@ type SenderDeliverySettings = {
   sentToday: number;
   remainingToday: number;
 };
+type IntelligenceInsight = {
+  id: string;
+  leadId: string;
+  leadName: string | null;
+  sourceName: string;
+  status: string;
+  analyzedAt: string;
+  messageCount: number;
+  toolCallCount: number;
+  toolFailureCount: number;
+  analysis: {
+    summary: string;
+    funnelStage: string;
+    intent: string;
+    needsHuman: boolean;
+    nextAction: string;
+    bottlenecks: Array<{ type: string; severity: "low" | "medium" | "high"; detail: string }>;
+    evidence: string[];
+  };
+};
+type IntelligenceData = {
+  aiConfigured: boolean;
+  model: string;
+  overview: { analyzed: number; highPriority: number; toolCalls: number; toolFailures: number };
+  insights: IntelligenceInsight[];
+};
 
 export function FollowupDashboard() {
   const [activeNav, setActiveNav] = useState("Visão geral");
@@ -190,6 +218,9 @@ export function FollowupDashboard() {
   const [senderSettings, setSenderSettings] = useState<SenderDeliverySettings[]>([]);
   const [senderSettingsAction, setSenderSettingsAction] = useState<string | null>(null);
   const [senderSettingsMessage, setSenderSettingsMessage] = useState("");
+  const [intelligence, setIntelligence] = useState<IntelligenceData | null>(null);
+  const [intelligenceMessage, setIntelligenceMessage] = useState("");
+  const [intelligenceAction, setIntelligenceAction] = useState<"idle" | "analyzing" | "chatting">("idle");
   const [leadSource, setLeadSource] = useState<"usuarios_sdr" | "clinica_nova">("usuarios_sdr");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [enrollCampaign, setEnrollCampaign] = useState("");
@@ -394,6 +425,45 @@ export function FollowupDashboard() {
     setSenderSettings(data.senders);
   }
 
+  async function loadIntelligence() {
+    const response = await fetch("/api/intelligence", { cache: "no-store" });
+    const data = await response.json() as IntelligenceData & { error?: string };
+    if (!response.ok) throw new Error(data.error ?? "Não foi possível carregar a inteligência operacional.");
+    setIntelligence(data);
+  }
+
+  async function analyzeConversation(leadId: string) {
+    setIntelligenceAction("analyzing");
+    setIntelligenceMessage("");
+    try {
+      const response = await fetch("/api/intelligence/analyze", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ leadId }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Não foi possível analisar a conversa.");
+      await loadIntelligence();
+      setIntelligenceMessage("Conversa analisada. Os gargalos e a próxima ação estão disponíveis abaixo.");
+    } catch (error) {
+      setIntelligenceMessage(error instanceof Error ? error.message : "Não foi possível analisar a conversa.");
+    } finally {
+      setIntelligenceAction("idle");
+    }
+  }
+
+  async function askIntelligence(question: string) {
+    setIntelligenceAction("chatting");
+    try {
+      const response = await fetch("/api/intelligence/chat", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question }),
+      });
+      const data = await response.json() as { answer?: string; error?: string };
+      if (!response.ok || !data.answer) throw new Error(data.error ?? "Não foi possível responder agora.");
+      return data.answer;
+    } finally {
+      setIntelligenceAction("idle");
+    }
+  }
+
   async function saveSenderSettings(senderCode: SenderDeliverySettings["code"], dailyLimit: number, minIntervalSeconds: number) {
     setSenderSettingsAction(senderCode);
     setSenderSettingsMessage("");
@@ -457,6 +527,7 @@ export function FollowupDashboard() {
       loadBroadcastSetup(),
       loadConnections(),
       loadSenderSettings(),
+      loadIntelligence(),
     ]).then(([, dashboardData, leadData, messageData]) => {
       setDashboard(dashboardData as DashboardData);
       const catalog = leadData as { databaseLeads: LeadRow[]; csvLeads: LeadRow[] };
@@ -833,6 +904,15 @@ export function FollowupDashboard() {
           onReload={loadLibrary}
         />}
 
+        {activeNav === "Inteligência" && <IntelligencePanel
+          data={intelligence}
+          leads={databaseLeads}
+          action={intelligenceAction}
+          message={intelligenceMessage}
+          onAnalyze={analyzeConversation}
+          onAsk={askIntelligence}
+        />}
+
         {activeNav === "Conexões" && <ConnectionsPanel
           connections={connections}
           senderSettings={senderSettings}
@@ -859,6 +939,83 @@ function Metric({ label, value, hint, alert = false }: { label: string; value: s
 
 function DataPanel({ title, subtitle, empty, children, hasRows }: { title: string; subtitle: string; empty: string; children: React.ReactNode; hasRows: boolean }) {
   return <section className="saved-section data-panel"><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div>{hasRows ? children : <p className="empty-state">{empty}</p>}</section>;
+}
+
+function IntelligencePanel({ data, leads, action, message, onAnalyze, onAsk }: {
+  data: IntelligenceData | null;
+  leads: LeadRow[];
+  action: "idle" | "analyzing" | "chatting";
+  message: string;
+  onAnalyze: (leadId: string) => Promise<void>;
+  onAsk: (question: string) => Promise<string>;
+}) {
+  const [leadId, setLeadId] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [chatError, setChatError] = useState("");
+  const eligibleLeads = leads.filter((lead) => lead.origin_kind === "database" && Boolean(lead.source_chat_id));
+
+  async function submitQuestion(event: React.FormEvent) {
+    event.preventDefault();
+    if (!question.trim()) return;
+    setChatError("");
+    setAnswer("");
+    try {
+      setAnswer(await onAsk(question));
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : "Não foi possível responder agora.");
+    }
+  }
+
+  return <section className="intelligence-screen">
+    <header className="intelligence-heading">
+      <div><p className="eyebrow">Leitura operacional</p><h2>Inteligência de atendimento</h2><p>Analise conversas quando precisar entender o que está travando o agendamento. Nenhuma ação é tomada automaticamente.</p></div>
+      <span className={data?.aiConfigured ? "intelligence-state ready" : "intelligence-state"}>{data?.aiConfigured ? "IA pronta" : "IA aguardando chave"}</span>
+    </header>
+
+    {!data?.aiConfigured && <aside className="intelligence-notice"><strong>Análise sob demanda ainda não está conectada.</strong><span>Adicione <code>OPENAI_API_KEY</code> às variáveis da Stack para liberar a análise e o chat. As conversas nunca são enviadas sem essa configuração.</span></aside>}
+
+    <div className="intelligence-metrics">
+      <Metric label="Conversas analisadas" value={String(data?.overview.analyzed ?? 0)} hint="leitura salva para consulta" />
+      <Metric label="Gargalos urgentes" value={String(data?.overview.highPriority ?? 0)} hint="priorize intervenção humana" alert />
+      <Metric label="Chamadas de ferramenta" value={String(data?.overview.toolCalls ?? 0)} hint="observadas nas conversas" />
+      <Metric label="Falhas técnicas" value={String(data?.overview.toolFailures ?? 0)} hint="sinais em retornos de ferramenta" alert={Boolean(data?.overview.toolFailures)} />
+    </div>
+
+    <section className="intelligence-analyze">
+      <div><p className="eyebrow">Análise pontual</p><h3>Entender uma conversa</h3><p>Escolha um lead para criar ou atualizar a leitura da conversa dele.</p></div>
+      <label>Lead
+        <select value={leadId} onChange={(event) => setLeadId(event.target.value)} disabled={!data?.aiConfigured || action !== "idle"}>
+          <option value="">Selecione um lead com histórico</option>
+          {eligibleLeads.map((lead) => <option key={lead.id} value={lead.id}>{lead.name || lead.phone || "Lead sem nome"} · {lead.source_name}</option>)}
+        </select>
+      </label>
+      <button className="primary-button" disabled={!leadId || !data?.aiConfigured || action !== "idle"} onClick={() => void onAnalyze(leadId)}>{action === "analyzing" ? "Analisando..." : "Analisar conversa"}</button>
+      {message && <p className="intelligence-message" role="status">{message}</p>}
+    </section>
+
+    <section className="intelligence-results">
+      <div className="intelligence-results-heading"><div><p className="eyebrow">Leituras recentes</p><h3>Onde a operação está perdendo ritmo</h3></div><span>{data?.insights.length ?? 0} análise{(data?.insights.length ?? 0) === 1 ? "" : "s"}</span></div>
+      {!data?.insights.length ? <div className="intelligence-empty"><strong>Nenhuma conversa analisada ainda.</strong><span>A leitura aparecerá aqui com estágio, gargalos e próximo passo recomendado.</span></div> : <div className="intelligence-list">{data.insights.map((insight) => <article key={insight.id}>
+        <div className="intelligence-lead"><span>{insight.sourceName}</span><h4>{insight.leadName || "Lead sem nome"}</h4><small>{new Date(insight.analyzedAt).toLocaleString("pt-BR")} · {insight.messageCount} mensagens</small></div>
+        <div className="intelligence-summary"><p>{insight.analysis.summary}</p><small>Próximo passo: <strong>{insight.analysis.nextAction}</strong></small></div>
+        <div className="intelligence-tags"><span>{insight.analysis.funnelStage.replaceAll("_", " ")}</span><span className={`intent ${insight.analysis.intent}`}>interesse {insight.analysis.intent}</span>{insight.analysis.needsHuman && <span className="human">humano</span>}</div>
+        <div className="intelligence-bottlenecks">{insight.analysis.bottlenecks.length ? insight.analysis.bottlenecks.map((bottleneck, index) => <span className={bottleneck.severity} title={bottleneck.detail} key={`${bottleneck.type}-${index}`}>{bottleneck.type}: {bottleneck.detail}</span>) : <span className="none">Sem gargalo evidente</span>}</div>
+      </article>)}</div>}
+    </section>
+
+    <section className="intelligence-chat-wrap">
+      <button className="intelligence-chat-toggle" onClick={() => setChatOpen((current) => !current)} aria-expanded={chatOpen}>◌ {chatOpen ? "Fechar conversa sobre gargalos" : "Conversar sobre um gargalo"}</button>
+      {chatOpen && <form className="intelligence-chat" onSubmit={submitQuestion}>
+        <div><strong>Conversa de análise</strong><small>Use quando quiser explorar uma hipótese. A resposta usa apenas as análises já salvas.</small></div>
+        <textarea value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ex.: O que pode estar causando a queda de interesse antes do agendamento?" disabled={!data?.aiConfigured || action !== "idle"} />
+        <button className="secondary-button" type="submit" disabled={!question.trim() || !data?.aiConfigured || action !== "idle"}>{action === "chatting" ? "Pensando..." : "Perguntar"}</button>
+        {chatError && <p className="intelligence-message error">{chatError}</p>}
+        {answer && <p className="intelligence-answer">{answer}</p>}
+      </form>}
+    </section>
+  </section>;
 }
 
 function ConnectionsPanel({ connections, senderSettings, action, message, settingsAction, settingsMessage, onRefresh, onConnect, onSaveSettings }: {
