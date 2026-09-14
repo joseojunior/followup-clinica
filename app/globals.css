@@ -326,6 +326,20 @@ select { min-height: 35px; padding: 0 30px 0 9px; }.source-picker select { min-w
 .campaign-power.on i { background: var(--teal); box-shadow: inset 0 0 0 5px #cce9e2; }
 .campaign-power:disabled { opacity: .55; }
 
+.sender-capacity { display: grid; gap: 10px; margin-top: 14px; padding: 13px; border: 1px solid #cee1db; background: #f8fcfa; }
+.sender-capacity-heading { display: flex; align-items: end; justify-content: space-between; gap: 10px; }
+.sender-capacity-heading small { display: block; color: var(--ink-soft); font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.sender-capacity-heading strong { display: block; margin-top: 3px; color: var(--teal-deep); font-size: 13px; }
+.sender-capacity-heading > span { color: var(--teal); font-size: 11px; font-weight: 850; white-space: nowrap; }
+.sender-capacity-bar { height: 7px; overflow: hidden; border-radius: 99px; background: #dceae5; }
+.sender-capacity-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #328e7d, #81c4a9); transition: width .2s ease; }
+.sender-capacity-controls { display: grid; grid-template-columns: 1fr 1fr auto; align-items: end; gap: 8px; }
+.sender-capacity-controls label { display: grid; gap: 4px; color: var(--ink-soft); font-size: 10px; font-weight: 800; }
+.sender-capacity-controls input { width: 100%; border: 1px solid #b9d6cf; border-radius: 5px; padding: 7px 8px; color: var(--ink); background: #fff; font: inherit; font-size: 12px; }
+.sender-capacity-controls label small { color: var(--ink-soft); font-size: 9px; font-weight: 600; }
+.sender-capacity-controls .secondary-button { min-height: 34px; padding: 7px 10px; white-space: nowrap; }
+.sender-capacity > p { margin: 0; color: var(--ink-soft); font-size: 10px; line-height: 1.4; }
+
 @media (max-width: 1050px) {
   .saved-campaign { grid-template-columns: minmax(220px, 1fr) auto auto; }
   .campaign-actions { grid-column: 1 / -1; justify-content: flex-start; }
@@ -340,4 +354,6 @@ select { min-height: 35px; padding: 0 30px 0 9px; }.source-picker select { min-w
   .campaign-volume { justify-content: flex-start; padding: 5px 0; }
   .campaign-power { justify-self: end; }
   .campaign-actions { grid-column: 1 / -1; }
+  .sender-capacity-controls { grid-template-columns: 1fr 1fr; }
+  .sender-capacity-controls .secondary-button { grid-column: 1 / -1; width: 100%; }
 }

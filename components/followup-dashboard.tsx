@@ -151,6 +151,15 @@ type SenderConnection = {
   error: string | null;
   qrcode?: string | null;
 };
+type SenderDeliverySettings = {
+  code: "sender_1" | "sender_2";
+  name: string;
+  dailyLimit: number;
+  minIntervalSeconds: number;
+  timezone: string;
+  sentToday: number;
+  remainingToday: number;
+};
 
 export function FollowupDashboard() {
   const [activeNav, setActiveNav] = useState("Visão geral");
@@ -178,6 +187,9 @@ export function FollowupDashboard() {
   const [connections, setConnections] = useState<SenderConnection[]>([]);
   const [connectionAction, setConnectionAction] = useState<string | null>(null);
   const [connectionMessage, setConnectionMessage] = useState("");
+  const [senderSettings, setSenderSettings] = useState<SenderDeliverySettings[]>([]);
+  const [senderSettingsAction, setSenderSettingsAction] = useState<string | null>(null);
+  const [senderSettingsMessage, setSenderSettingsMessage] = useState("");
   const [leadSource, setLeadSource] = useState<"usuarios_sdr" | "clinica_nova">("usuarios_sdr");
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [enrollCampaign, setEnrollCampaign] = useState("");
@@ -375,6 +387,33 @@ export function FollowupDashboard() {
     }
   }
 
+  async function loadSenderSettings() {
+    const response = await fetch("/api/senders", { cache: "no-store" });
+    const data = await response.json() as { senders?: SenderDeliverySettings[]; error?: string };
+    if (!response.ok || !data.senders) throw new Error(data.error ?? "Não foi possível carregar os limites de envio.");
+    setSenderSettings(data.senders);
+  }
+
+  async function saveSenderSettings(senderCode: SenderDeliverySettings["code"], dailyLimit: number, minIntervalSeconds: number) {
+    setSenderSettingsAction(senderCode);
+    setSenderSettingsMessage("");
+    try {
+      const response = await fetch("/api/senders", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: senderCode, dailyLimit, minIntervalSeconds }),
+      });
+      const data = await response.json() as { senders?: SenderDeliverySettings[]; error?: string };
+      if (!response.ok || !data.senders) throw new Error(data.error ?? "Não foi possível atualizar a unidade.");
+      setSenderSettings(data.senders);
+      setSenderSettingsMessage("Ritmo de envio atualizado. A fila seguirá usando o novo limite.");
+    } catch (error) {
+      setSenderSettingsMessage(error instanceof Error ? error.message : "Não foi possível atualizar a unidade.");
+    } finally {
+      setSenderSettingsAction(null);
+    }
+  }
+
   async function connectWhatsapp(senderCode: SenderConnection["code"]) {
     setConnectionAction(senderCode);
     setConnectionMessage("");
@@ -417,6 +456,7 @@ export function FollowupDashboard() {
       loadLibrary(),
       loadBroadcastSetup(),
       loadConnections(),
+      loadSenderSettings(),
     ]).then(([, dashboardData, leadData, messageData]) => {
       setDashboard(dashboardData as DashboardData);
       const catalog = leadData as { databaseLeads: LeadRow[]; csvLeads: LeadRow[] };
@@ -795,10 +835,14 @@ export function FollowupDashboard() {
 
         {activeNav === "Conexões" && <ConnectionsPanel
           connections={connections}
+          senderSettings={senderSettings}
           action={connectionAction}
           message={connectionMessage}
+          settingsAction={senderSettingsAction}
+          settingsMessage={senderSettingsMessage}
           onRefresh={() => loadConnections(true)}
           onConnect={connectWhatsapp}
+          onSaveSettings={saveSenderSettings}
         />}
 
         {activeNav === "Pendências" && <DataPanel hasRows={[...databaseLeads, ...csvLeads].some((lead) => Boolean(lead.state && ["paused", "blocked", "pending_data"].includes(lead.state)) || !lead.is_eligible)} title="Pendências operacionais" subtitle="Leads pausados, bloqueados ou com dados ausentes" empty="Nenhuma pendência operacional.">
@@ -817,12 +861,16 @@ function DataPanel({ title, subtitle, empty, children, hasRows }: { title: strin
   return <section className="saved-section data-panel"><div><p className="eyebrow">{subtitle}</p><h2>{title}</h2></div>{hasRows ? children : <p className="empty-state">{empty}</p>}</section>;
 }
 
-function ConnectionsPanel({ connections, action, message, onRefresh, onConnect }: {
+function ConnectionsPanel({ connections, senderSettings, action, message, settingsAction, settingsMessage, onRefresh, onConnect, onSaveSettings }: {
   connections: SenderConnection[];
+  senderSettings: SenderDeliverySettings[];
   action: string | null;
   message: string;
+  settingsAction: string | null;
+  settingsMessage: string;
   onRefresh: () => void;
   onConnect: (senderCode: SenderConnection["code"]) => void;
+  onSaveSettings: (senderCode: SenderDeliverySettings["code"], dailyLimit: number, minIntervalSeconds: number) => Promise<void>;
 }) {
   const labels: Record<ConnectionStatus, string> = {
     connected: "Conectado", connecting: "Aguardando leitura", disconnected: "Desconectado",
@@ -837,6 +885,7 @@ function ConnectionsPanel({ connections, action, message, onRefresh, onConnect }
     <div className="connection-grid">
       {connections.length === 0 ? <article className="connection-empty"><strong>Consultando as linhas</strong><span>O primeiro estado aparecerá em instantes.</span></article> : connections.map((connection, index) => {
         const disconnected = connection.status !== "connected";
+        const setting = senderSettings.find((item) => item.code === connection.code);
         return <article className={`connection-card ${connection.status}`} key={connection.code}>
           <i className="line-signal" aria-hidden="true" />
           <div className="connection-card-top">
@@ -859,6 +908,20 @@ function ConnectionsPanel({ connections, action, message, onRefresh, onConnect }
             <div><dt>Última verificação</dt><dd>{connection.checkedAt ? new Date(connection.checkedAt).toLocaleString("pt-BR") : "Ainda não realizada"}</dd></div>
             <div><dt>Última desconexão</dt><dd>{connection.lastDisconnectAt ? new Date(connection.lastDisconnectAt).toLocaleString("pt-BR") : "Sem registro"}</dd></div>
           </dl>
+          {setting && <form className="sender-capacity" onSubmit={(event) => {
+            event.preventDefault();
+            const values = new FormData(event.currentTarget);
+            void onSaveSettings(connection.code, Number(values.get("dailyLimit")), Number(values.get("minIntervalSeconds")));
+          }}>
+            <div className="sender-capacity-heading"><div><small>Ritmo de envio</small><strong>{setting.sentToday} de {setting.dailyLimit} enviados hoje</strong></div><span>{setting.remainingToday} disponíveis</span></div>
+            <div className="sender-capacity-bar" aria-label={`${setting.sentToday} de ${setting.dailyLimit} mensagens enviadas hoje`}><i style={{ width: `${Math.min(100, (setting.sentToday / setting.dailyLimit) * 100)}%` }} /></div>
+            <div className="sender-capacity-controls">
+              <label>Limite diário<input name="dailyLimit" type="number" min="1" max="10000" defaultValue={setting.dailyLimit} /></label>
+              <label>Intervalo entre mensagens<input name="minIntervalSeconds" type="number" min="0" max="3600" defaultValue={setting.minIntervalSeconds} /><small>segundos</small></label>
+              <button className="secondary-button" type="submit" disabled={settingsAction === connection.code}>{settingsAction === connection.code ? "Salvando..." : "Salvar ritmo"}</button>
+            </div>
+            <p>O limite é reiniciado à meia-noite do fuso da unidade ({setting.timezone}).</p>
+          </form>}
           <footer>
             <span>{connection.status === "connected" ? "Monitoramento automático a cada 15 segundos" : "A fila permanece preservada enquanto a linha estiver fora"}</span>
             {disconnected && <button className="primary-button" onClick={() => onConnect(connection.code)} disabled={action === connection.code}>{action === connection.code ? "Gerando..." : connection.status === "connecting" ? "Gerar novo QR" : "Conectar com QR Code"}</button>}
@@ -866,6 +929,7 @@ function ConnectionsPanel({ connections, action, message, onRefresh, onConnect }
         </article>;
       })}
     </div>
+    {settingsMessage && <p className="connection-message" role="status">{settingsMessage}</p>}
     <aside className="connection-safety"><strong>Proteção da cadência</strong><span>Uma linha desconectada não consome tentativas nem falha mensagens. Os envios retomam na próxima rodada depois da reconexão.</span></aside>
   </section>;
 }

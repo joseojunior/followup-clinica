@@ -5,7 +5,7 @@ type SenderSlot = { allowed: boolean; availableAt: Date; reason?: string };
 export async function reserveSenderSlot(senderId: string): Promise<SenderSlot> {
   return withTransaction(async (client) => {
     const sender = await client.query(
-      "SELECT daily_limit, min_interval_seconds FROM followup.senders WHERE id = $1 AND is_active = true",
+      "SELECT daily_limit, min_interval_seconds, timezone FROM followup.senders WHERE id = $1 AND is_active = true",
       [senderId],
     );
     if (!sender.rowCount) return { allowed: false, availableAt: new Date(Date.now() + 60 * 60 * 1_000), reason: "Unidade remetente indisponível" };
@@ -26,12 +26,15 @@ export async function reserveSenderSlot(senderId: string): Promise<SenderSlot> {
 
     const sentToday = await client.query(
       `SELECT (
-        (SELECT COUNT(*) FROM followup.messages WHERE sender_id = $1 AND state = 'sent' AND sent_at >= CURRENT_DATE) +
+        (SELECT COUNT(*) FROM followup.messages
+         WHERE sender_id = $1 AND state = 'sent'
+           AND sent_at >= (date_trunc('day', NOW() AT TIME ZONE $2) AT TIME ZONE $2)) +
         (SELECT COUNT(*) FROM followup.broadcast_recipients recipient
          JOIN followup.broadcast_campaigns campaign ON campaign.id = recipient.broadcast_campaign_id
-         WHERE campaign.sender_id = $1 AND recipient.state = 'sent' AND recipient.sent_at >= CURRENT_DATE)
+         WHERE campaign.sender_id = $1 AND recipient.state = 'sent'
+           AND recipient.sent_at >= (date_trunc('day', NOW() AT TIME ZONE $2) AT TIME ZONE $2))
       )::int AS count`,
-      [senderId],
+      [senderId, sender.rows[0].timezone],
     );
     if (sentToday.rows[0].count >= sender.rows[0].daily_limit) {
       return {
