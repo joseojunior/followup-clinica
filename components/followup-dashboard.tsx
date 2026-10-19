@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { LogoutButton } from "@/components/logout-button";
+import { N8nPanel } from "@/components/n8n-panel";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type ContentKind = "Texto" | "Sticker + texto" | "Imagem + texto";
@@ -29,6 +30,7 @@ const navItems = [
   { label: "Leads", mark: "◎" },
   { label: "Biblioteca", mark: "✦" },
   { label: "Inteligência", mark: "◌" },
+  { label: "Automações", mark: "⌘" },
   { label: "Conexões", mark: "⌁" },
   { label: "Histórico", mark: "≋" },
   { label: "Pendências", mark: "!" },
@@ -920,6 +922,8 @@ export function FollowupDashboard() {
           onAnalyze={analyzeConversation}
           onAsk={askIntelligence}
         />}
+
+        {activeNav === "Automações" && <N8nPanel />}
 
         {activeNav === "Conexões" && <ConnectionsPanel
           connections={connections}

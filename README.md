@@ -113,3 +113,9 @@ O workflow `.github/workflows/publish-container.yml` publica automaticamente no 
 após cada push na `main`. Configure no repositório as Actions Variables
 `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`; a imagem será
 publicada como `ghcr.io/joseojunior/followup-clinica:latest`.
+
+## Monitor do n8n
+
+A área **Automações** consulta a API pública do n8n a partir do servidor. Configure `N8N_API_BASE_URL` (terminando em `/api/v1`) no ambiente da stack e cadastre uma chave nova pela área "Configuração da API" no painel. A chave é criptografada no banco com `AI_SETTINGS_ENCRYPTION_KEY`. Como alternativa, defina `N8N_API_KEY` somente no ambiente do servidor. A chave nunca deve usar o prefixo `NEXT_PUBLIC_` nem ir para o Git. No n8n Enterprise, prefira uma chave com somente `workflow:list` e `execution:list`; em outras edições a chave pode ter permissões amplas, então mantenha-a restrita ao servidor e rotacione-a se tiver sido compartilhada em uma conversa.
+
+O monitor é somente de leitura. Ele consulta até 1.000 fluxos e as 500 execuções mais recentes, mostra quando existe paginação adicional e calcula os indicadores somente sobre essa amostra. Os dados de entrada e saída de nós, conversas e credenciais não são enviados ao navegador.
