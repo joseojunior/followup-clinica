@@ -119,3 +119,9 @@ publicada como `ghcr.io/joseojunior/followup-clinica:latest`.
 A área **Automações** consulta a API pública do n8n a partir do servidor. Configure `N8N_API_BASE_URL` (terminando em `/api/v1`) no ambiente da stack e cadastre uma chave nova pela área "Configuração da API" no painel. A chave é criptografada no banco com `AI_SETTINGS_ENCRYPTION_KEY`. Como alternativa, defina `N8N_API_KEY` somente no ambiente do servidor. A chave nunca deve usar o prefixo `NEXT_PUBLIC_` nem ir para o Git. No n8n Enterprise, prefira uma chave com somente `workflow:list` e `execution:list`; em outras edições a chave pode ter permissões amplas, então mantenha-a restrita ao servidor e rotacione-a se tiver sido compartilhada em uma conversa.
 
 O monitor é somente de leitura. Ele consulta até 1.000 fluxos e as 500 execuções mais recentes, mostra quando existe paginação adicional e calcula os indicadores somente sobre essa amostra. Os dados de entrada e saída de nós, conversas e credenciais não são enviados ao navegador.
+
+## Métricas da VPS
+
+A área **Infraestrutura** consulta somente os endpoints de leitura da API da Hostinger para listar as VPS e obter séries históricas de CPU, memória, disco, rede e uptime. O token pode ser validado e cadastrado no painel, criptografado no banco com `AI_SETTINGS_ENCRYPTION_KEY`, ou configurado como `HOSTINGER_API_KEY` no servidor. `HOSTINGER_VPS_IP` seleciona a VPS inicial quando houver várias. A chave não vai para o navegador depois de cadastrada nem para o Git. O prazo de validade é definido no hPanel e não pode ser inferido do texto do token.
+
+Este painel não controla a VPS e não mostra consumo por container ou serviço Docker Swarm. Para isso, será necessária uma coleta complementar na VPS. Tokens compartilhados fora do painel devem ser revogados e substituídos.

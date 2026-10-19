@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { LogoutButton } from "@/components/logout-button";
 import { N8nPanel } from "@/components/n8n-panel";
+import { HostingerPanel } from "@/components/hostinger-panel";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type ContentKind = "Texto" | "Sticker + texto" | "Imagem + texto";
@@ -31,6 +32,7 @@ const navItems = [
   { label: "Biblioteca", mark: "✦" },
   { label: "Inteligência", mark: "◌" },
   { label: "Automações", mark: "⌘" },
+  { label: "Infraestrutura", mark: "▤" },
   { label: "Conexões", mark: "⌁" },
   { label: "Histórico", mark: "≋" },
   { label: "Pendências", mark: "!" },
@@ -924,6 +926,8 @@ export function FollowupDashboard() {
         />}
 
         {activeNav === "Automações" && <N8nPanel />}
+
+        {activeNav === "Infraestrutura" && <HostingerPanel />}
 
         {activeNav === "Conexões" && <ConnectionsPanel
           connections={connections}
