@@ -19,7 +19,9 @@ O último `GRANT` é opcional e somente será usado quando uma etapa optar por p
 
 ## Política de validação
 
-O worker relê o lead pelo `chat_id` e pela fonte correta antes de enviar. Ele cancela a mensagem local se encontrar `agendado = true` ou `transferido = true`. Nenhuma coluna em `public.usuarios_sdr*` é modificada.
+O worker relê o lead pelo `chat_id` e pela fonte correta imediatamente antes de enviar. Ele cancela a mensagem local e bloqueia a cadência se encontrar `agendado = true`, `id_agendamento` preenchido, `status_conversa` indicando agendamento/encerramento/desqualificação/encaminhamento humano/tratamento ou `status_qualificacao = qualificado_agendado`/`desqualificado`. `transferido = true` também bloqueia. Nenhuma coluna em `public.usuarios_sdr*` é modificada.
+
+`tratamento_principal` descreve o procedimento de interesse, não comprova que o paciente já está em tratamento. O status genérico `em_atendimento` também pode ser uma conversa ativa com um lead de follow-up; por isso não é tratado como prova de tratamento. Para bloquear com certeza pacientes já em tratamento, o n8n ou a clínica deve registrar um status explícito como `em_tratamento` na fonte.
 
 ## Observação sobre respostas
 

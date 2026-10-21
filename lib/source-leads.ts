@@ -65,6 +65,7 @@ function toSnapshot(row: Record<string, unknown>): LeadSnapshot {
     email: typeof row.email === "string" ? row.email : null,
     transferred: typeof row.transferido === "boolean" ? row.transferido : null,
     booked: typeof row.agendado === "boolean" ? row.agendado : null,
+    appointmentId: typeof row.id_agendamento === "string" ? row.id_agendamento : null,
     followupAllowed: typeof row.followup === "boolean" ? row.followup : null,
     conversationStatus: typeof row.status_conversa === "string" ? row.status_conversa : null,
     treatment: typeof row.tratamento_principal === "string" ? row.tratamento_principal : null,
@@ -85,7 +86,7 @@ export async function findSourceLead(sourceKey: SourceKey, chatId: string): Prom
   const source = sourceDefinitions[sourceKey];
   const result = await getSourcePool(sourceKey).query(
     `SELECT
-      chat_id, lead_id, nome, telefone, email, transferido, agendado, followup,
+      chat_id, lead_id, nome, telefone, email, transferido, agendado, id_agendamento, followup,
       status_conversa, tratamento_principal, status_qualificacao, localizacao,
       tipo_atendimento, last_ai_message_data, created_at, ${sourceControlColumns(sourceKey)}
     FROM ${source.table}
@@ -108,11 +109,12 @@ export async function listEligibleSourceLeads(
   const requireFollowupFlag = options.requireFollowupFlag !== false;
   const result = await getSourcePool(sourceKey).query(
     `SELECT
-      chat_id, lead_id, nome, telefone, email, transferido, agendado, followup,
+      chat_id, lead_id, nome, telefone, email, transferido, agendado, id_agendamento, followup,
       status_conversa, tratamento_principal, status_qualificacao, localizacao,
       tipo_atendimento, last_ai_message_data, created_at, ${sourceControlColumns(sourceKey)}
     FROM ${source.table}
     WHERE COALESCE(agendado, false) = false
+      AND id_agendamento IS NULL
       AND COALESCE(transferido, false) = false
       AND ($1::boolean = false OR followup = true)
     ORDER BY created_at ASC
@@ -191,12 +193,13 @@ export async function listEligibleSourceLeadsAfter(
   const anchor = "COALESCE(NULLIF(last_ai_message_data::text, '')::timestamptz, created_at)";
   const result = await getSourcePool(sourceKey).query(
     `SELECT
-      chat_id, lead_id, nome, telefone, email, transferido, agendado, followup,
+      chat_id, lead_id, nome, telefone, email, transferido, agendado, id_agendamento, followup,
       status_conversa, tratamento_principal, status_qualificacao, localizacao,
       tipo_atendimento, last_ai_message_data, created_at, ${anchor}::text AS source_event_at,
       ${sourceControlColumns(sourceKey)}
     FROM ${source.table}
     WHERE COALESCE(agendado, false) = false
+      AND id_agendamento IS NULL
       AND COALESCE(transferido, false) = false
       AND ($1::boolean = false OR followup = true)
       AND (${anchor} > $2::timestamptz
@@ -217,7 +220,7 @@ export async function listSourceLeadsPage(
   const limit = Math.min(Math.max(options.limit ?? 500, 1), 1_000);
   const result = await getSourcePool(sourceKey).query(
     `SELECT
-      chat_id, lead_id, nome, telefone, email, transferido, agendado, followup,
+      chat_id, lead_id, nome, telefone, email, transferido, agendado, id_agendamento, followup,
       status_conversa, tratamento_principal, status_qualificacao, localizacao,
       tipo_atendimento, last_ai_message_data, created_at, ${sourceControlColumns(sourceKey)}
     FROM ${source.table}

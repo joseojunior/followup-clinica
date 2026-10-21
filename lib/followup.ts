@@ -6,6 +6,7 @@ export type LeadSnapshot = {
   email: string | null;
   transferred: boolean | null;
   booked: boolean | null;
+  appointmentId?: string | null;
   followupAllowed: boolean | null;
   conversationStatus: string | null;
   treatment: string | null;
@@ -42,12 +43,30 @@ export function getLeadEligibility(
 ): Eligibility {
   if (!lead.chatId) return { eligible: false, reason: "Lead sem chat_id" };
   if (!normalizeBrazilPhone(lead.phone)) return { eligible: false, reason: "Telefone inválido ou ausente" };
-  if (lead.booked === true) return { eligible: false, reason: "Lead já agendado" };
+  const conversationStatus = normalizeLeadStatus(lead.conversationStatus);
+  const qualificationStatus = normalizeLeadStatus(lead.qualificationStatus);
+  if (lead.booked === true || lead.appointmentId || /^agendad[oa](?:_|$)/.test(conversationStatus) || qualificationStatus === "qualificado_agendado") {
+    return { eligible: false, reason: "Lead já agendado" };
+  }
   if (lead.transferred === true) return { eligible: false, reason: "Lead transferido para atendimento" };
+  if (/^encerrad[oa](?:_|$)|^finalizad[oa](?:_|$)|^concluid[oa](?:_|$)|^desqualificad[oa](?:_|$)/.test(conversationStatus)
+    || /^desqualificad[oa](?:_|$)/.test(qualificationStatus)) {
+    return { eligible: false, reason: "Atendimento encerrado ou lead desqualificado" };
+  }
+  if (conversationStatus === "encaminhado_humano") {
+    return { eligible: false, reason: "Lead encaminhado para atendimento humano" };
+  }
+  if (["em_tratamento", "tratamento_em_andamento", "paciente_em_tratamento"].includes(conversationStatus)) {
+    return { eligible: false, reason: "Lead em tratamento" };
+  }
   if (options.requireFollowupFlag !== false && lead.followupAllowed !== true) {
     return { eligible: false, reason: "Follow-up não autorizado na fonte" };
   }
   return { eligible: true, reason: null };
+}
+
+function normalizeLeadStatus(value: string | null): string {
+  return (value ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[\s-]+/g, "_");
 }
 
 export function renderTemplate(
