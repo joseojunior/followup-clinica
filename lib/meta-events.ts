@@ -1,0 +1,303 @@
+import "server-only";
+import { randomBytes } from "node:crypto";
+import { getFollowupPool, withTransaction } from "@/lib/followup-db";
+import { findSourceMetaLead } from "@/lib/source-leads";
+import { decryptMetaSecret, encryptMetaSecret, metaEncryptionReady } from "@/lib/meta-secret";
+import { classifyMetaDelivery, classifyMetaEvent, digest, duplicateMatches, equalDigest, metaEventName, type MetaStage, type MetaUnit, validateMetaInput } from "@/lib/meta-core";
+
+type UnitRow = {
+  unit: MetaUnit; inbound_token_hash: string | null; encrypted_access_token: string | null;
+  dataset_id: string | null; waba_id: string | null; enabled: boolean;
+  enabled_at: Date | null; verified_at: Date | null; verified_number: string | null; capture_started_at: Date; updated_at: Date;
+};
+type PolicyRow = { unit: MetaUnit; event_type: MetaStage; approved: boolean; export_enabled: boolean; approved_by: string | null; approved_at: Date | null; enabled_at: Date | null };
+type EventRow = { id: string; unit: MetaUnit; event_type: MetaStage; occurred_at: Date; encrypted_ctwa: string | null; state: string; attempts: number; auto_retry_count: number; source_event_id: string; chat_hash: string; ctwa_hash: string | null };
+
+export class MetaInputError extends Error { constructor(message: string, public status = 400) { super(message); } }
+const sourceForUnit = { sender_1: "usuarios_sdr", sender_2: "clinica_nova" } as const;
+const mode = () => process.env.META_EXPORT_MODE === "live" ? "live" : "record_only";
+const graphVersion = () => {
+  const value = process.env.META_GRAPH_API_VERSION?.trim();
+  if (!value || !/^v\d+\.\d+$/.test(value)) throw new Error("Configure META_GRAPH_API_VERSION antes de testar ou enviar à Meta.");
+  return value;
+};
+
+function maskChat(chat: string) {
+  const tail = chat.replace(/\D/g, "").slice(-4);
+  return tail ? `••••${tail}` : `••••${digest(chat).slice(0, 4)}`;
+}
+
+export async function authenticateN8nToken(header: string | null): Promise<MetaUnit | null> {
+  const match = /^Bearer ([A-Za-z0-9_-]{32,150})$/.exec(header || "");
+  if (!match) return null;
+  const rows = await getFollowupPool().query<Pick<UnitRow, "unit" | "inbound_token_hash">>("SELECT unit, inbound_token_hash FROM followup.meta_unit_settings");
+  // Hash and constant-time compare; the token, not JSON, determines the unit.
+  return rows.rows.find((row) => row.inbound_token_hash && equalDigest(match[1], row.inbound_token_hash))?.unit || null;
+}
+
+export async function consumeIngestQuota(unit: MetaUnit) {
+  const result = await getFollowupPool().query<{ request_count: number }>(
+    `INSERT INTO followup.meta_ingest_rate(unit, minute_at, request_count)
+     VALUES ($1, date_trunc('minute', now()), 1)
+     ON CONFLICT (unit, minute_at) DO UPDATE SET request_count = followup.meta_ingest_rate.request_count + 1
+     RETURNING request_count`, [unit],
+  );
+  return result.rows[0].request_count <= 120;
+}
+
+export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
+  let event: ReturnType<typeof validateMetaInput>;
+  try { event = validateMetaInput(body); }
+  catch (error) { throw new MetaInputError(error instanceof Error ? error.message : "Corpo inválido."); }
+  if (event.unit !== tokenUnit) throw new MetaInputError("O token não pertence à unidade informada.", 403);
+  const chatHash = digest(`${event.unit}:${event.chatId}`);
+  const pool = getFollowupPool();
+  const existing = await pool.query<EventRow>(
+    `SELECT id, unit, event_type, source_event_id, chat_hash, occurred_at, ctwa_hash, state, attempts, encrypted_ctwa
+     FROM followup.meta_events WHERE unit=$1 AND event_type=$2 AND source_event_id=$3`,
+    [event.unit, event.eventType, event.sourceEventId],
+  );
+  if (existing.rows[0]) {
+    const row = existing.rows[0];
+    if (!duplicateMatches(row, { chatHash, occurredAt: event.occurredAt, ctwaClid: event.ctwaClid })) {
+      throw new MetaInputError("source_event_id já foi usado com dados diferentes.", 409);
+    }
+    return { id: row.id, state: row.state, duplicate: true };
+  }
+
+  const lead = await findSourceMetaLead(sourceForUnit[event.unit], event.chatId);
+  if (!lead) throw new MetaInputError("Chat não encontrado na fonte desta unidade.", 404);
+  if (event.eventType === "appointment_confirmed" && (!lead.agendado || !lead.id_agendamento || event.sourceEventId !== lead.id_agendamento)) {
+    throw new MetaInputError("Agendamento não confirmado ou source_event_id diferente de id_agendamento.", 409);
+  }
+  const sourceCtwa = typeof lead.ctwa_clid === "string" && /^[!-~]{12,1000}$/.test(lead.ctwa_clid) ? lead.ctwa_clid : null;
+
+  return withTransaction(async (client) => {
+    if (event.ctwaClid) {
+      await client.query(
+        `INSERT INTO followup.meta_clicks(unit, chat_hash, ctwa_hash, encrypted_ctwa, observed_at)
+         VALUES($1,$2,$3,$4,$5) ON CONFLICT (unit, chat_hash, ctwa_hash) DO NOTHING`,
+        [event.unit, chatHash, digest(event.ctwaClid), encryptMetaSecret(event.ctwaClid), event.occurredAt],
+      );
+    }
+    const click = await client.query<{ ctwa_hash: string; encrypted_ctwa: string }>(
+      `SELECT ctwa_hash, encrypted_ctwa FROM followup.meta_clicks
+       WHERE unit=$1 AND chat_hash=$2 AND observed_at <= $3 ORDER BY observed_at DESC LIMIT 1`,
+      [event.unit, chatHash, event.occurredAt],
+    );
+    const ctwa = click.rows[0] || (sourceCtwa ? { ctwa_hash: digest(sourceCtwa), encrypted_ctwa: encryptMetaSecret(sourceCtwa) } : null);
+    const origin = click.rows[0] ? "history" : ctwa ? "source" : null;
+    const setting = await client.query<UnitRow>("SELECT * FROM followup.meta_unit_settings WHERE unit=$1", [event.unit]);
+    const policy = await client.query<PolicyRow>("SELECT * FROM followup.meta_event_policy WHERE unit=$1 AND event_type=$2", [event.unit, event.eventType]);
+    const config = setting.rows[0]; const rule = policy.rows[0];
+    const historical = event.occurredAt < config.capture_started_at || event.occurredAt.getTime() < Date.now() - 7 * 86_400_000;
+    const candidate = metaEventName(event.eventType) !== null;
+    const { state, reason } = classifyMetaEvent({ hasCtwa: Boolean(ctwa), historical, candidate, live: mode() === "live", unitEnabled: config.enabled,
+      unitEnabledAt: config.enabled_at, typeApproved: rule.approved, typeEnabled: rule.export_enabled, typeEnabledAt: rule.enabled_at,
+      occurredAt: event.occurredAt, configured: Boolean(config.encrypted_access_token && config.dataset_id && config.waba_id) });
+    const inserted = await client.query<{ id: string; state: string }>(
+      `INSERT INTO followup.meta_events(unit,event_type,source_event_id,chat_hash,chat_mask,occurred_at,ctwa_hash,encrypted_ctwa,ctwa_origin,state,reason,next_attempt_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $10='queued' THEN now() ELSE NULL END)
+       ON CONFLICT (unit,event_type,source_event_id) DO NOTHING RETURNING id,state`,
+      [event.unit, event.eventType, event.sourceEventId, chatHash, maskChat(event.chatId), event.occurredAt, ctwa?.ctwa_hash || null, ctwa?.encrypted_ctwa || null, origin, state, reason],
+    );
+    if (inserted.rows[0]) return { ...inserted.rows[0], duplicate: false };
+    const raced = await client.query<EventRow>(
+      "SELECT id, unit, event_type, source_event_id, chat_hash, occurred_at, ctwa_hash, state, attempts, encrypted_ctwa FROM followup.meta_events WHERE unit=$1 AND event_type=$2 AND source_event_id=$3",
+      [event.unit, event.eventType, event.sourceEventId],
+    );
+    const row = raced.rows[0];
+    if (!duplicateMatches(row, { chatHash, occurredAt: event.occurredAt, ctwaClid: event.ctwaClid })) throw new MetaInputError("source_event_id já foi usado com dados diferentes.", 409);
+    return { id: row.id, state: row.state, duplicate: true };
+  });
+}
+
+export async function getMetaOverview(unit: MetaUnit | "all", days: number, search: string) {
+  const pool = getFollowupPool();
+  const params = [unit === "all" ? null : unit, days, search.trim().slice(0, 80)];
+  const where = "($1::text IS NULL OR unit=$1) AND occurred_at >= now()-($2::integer * interval '1 day')";
+  const [settings, policies, stats, funnel, events] = await Promise.all([
+    pool.query<UnitRow>("SELECT * FROM followup.meta_unit_settings ORDER BY unit"),
+    pool.query<PolicyRow>("SELECT * FROM followup.meta_event_policy ORDER BY unit,event_type"),
+    pool.query<{ state: string; count: string }>(`SELECT state,count(*)::text AS count FROM followup.meta_events WHERE ${where} GROUP BY state`, params.slice(0, 2)),
+    pool.query<{ event_type: MetaStage; count: string }>(`SELECT event_type,count(*)::text AS count FROM followup.meta_events WHERE ${where} GROUP BY event_type`, params.slice(0, 2)),
+    pool.query<{ id: string; unit: MetaUnit; event_type: MetaStage; state: string; reason: string | null; occurred_at: Date; created_at: Date; attempts: number; chat_mask: string; ctwa_origin: string | null; fbtrace_id: string | null }>(
+      `SELECT id,unit,event_type,state,reason,occurred_at,created_at,attempts,chat_mask,ctwa_origin,fbtrace_id
+       FROM followup.meta_events WHERE ${where} AND ($3='' OR chat_mask ILIKE '%'||$3||'%' OR source_event_id ILIKE '%'||$3||'%')
+       ORDER BY occurred_at DESC LIMIT 100`, params),
+  ]);
+  const counts = Object.fromEntries(stats.rows.map((row) => [row.state, Number(row.count)]));
+  return {
+    mode: mode(), encryptionReady: metaEncryptionReady(), graphVersionConfigured: Boolean(process.env.META_GRAPH_API_VERSION),
+    ingestUrl: process.env.META_INGEST_PUBLIC_URL?.trim() || null,
+    counts: { received: Object.values(counts).reduce((a, b) => a + b, 0), noCtwa: counts.no_ctwa || 0, awaitingApproval: counts.awaiting_approval || 0, queued: (counts.queued || 0) + (counts.sending || 0), accepted: counts.accepted || 0, failed: counts.failed || 0 },
+    funnel: Object.fromEntries(funnel.rows.map((row) => [row.event_type, Number(row.count)])),
+    events: events.rows,
+    units: settings.rows.map((row) => ({ unit: row.unit, enabled: row.enabled, verifiedAt: row.verified_at, datasetId: row.dataset_id, wabaId: row.waba_id,
+      tokenConfigured: Boolean(row.encrypted_access_token), inboundTokenConfigured: Boolean(row.inbound_token_hash), updatedAt: row.updated_at,
+      policies: policies.rows.filter((policy) => policy.unit === row.unit).map((policy) => ({ eventType: policy.event_type, approved: policy.approved, exportEnabled: policy.export_enabled, approvedBy: policy.approved_by, approvedAt: policy.approved_at })) })),
+  };
+}
+
+export async function rotateInboundToken(unit: MetaUnit, actor: string) {
+  const token = `mt_${randomBytes(32).toString("base64url")}`;
+  await withTransaction(async (client) => {
+    await client.query("UPDATE followup.meta_unit_settings SET inbound_token_hash=$2, updated_at=now() WHERE unit=$1", [unit, digest(token)]);
+    await client.query("INSERT INTO followup.meta_admin_audit(unit,action,actor) VALUES($1,'rotate_inbound_token',$2)", [unit, actor]);
+  });
+  return token;
+}
+
+export async function saveMetaUnit(unit: MetaUnit, input: { datasetId?: unknown; wabaId?: unknown; accessToken?: unknown; enabled?: unknown }, actor: string) {
+  const dataset = typeof input.datasetId === "string" ? input.datasetId.trim() : null;
+  const waba = typeof input.wabaId === "string" ? input.wabaId.trim() : null;
+  const token = typeof input.accessToken === "string" ? input.accessToken.trim() : "";
+  if (dataset !== null && !/^\d{5,30}$/.test(dataset)) throw new MetaInputError("Dataset ID deve conter somente dígitos.");
+  if (waba !== null && !/^\d{5,30}$/.test(waba)) throw new MetaInputError("WABA ID deve conter somente dígitos.");
+  if (input.accessToken !== undefined && (!token || token.length > 2000 || /\s/.test(token))) throw new MetaInputError("Token Meta inválido.");
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean") throw new MetaInputError("enabled deve ser booleano.");
+  if (token && !metaEncryptionReady()) throw new MetaInputError("Chave de criptografia indisponível no servidor.", 503);
+  await withTransaction(async (client) => {
+    const stored = await client.query<UnitRow>("SELECT * FROM followup.meta_unit_settings WHERE unit=$1 FOR UPDATE", [unit]);
+    if (input.enabled === true && !stored.rows[0]?.verified_at) throw new MetaInputError("Teste dataset, WABA e número antes de habilitar a unidade.", 409);
+    await client.query(
+      `UPDATE followup.meta_unit_settings SET
+       dataset_id=COALESCE($2,dataset_id), waba_id=COALESCE($3,waba_id),
+       encrypted_access_token=COALESCE($4,encrypted_access_token),
+       enabled=CASE WHEN $2 IS NOT NULL OR $3 IS NOT NULL OR $4 IS NOT NULL THEN false ELSE COALESCE($5,enabled) END,
+       enabled_at=CASE WHEN $2 IS NOT NULL OR $3 IS NOT NULL OR $4 IS NOT NULL OR $5=false THEN NULL WHEN $5=true AND enabled=false THEN now() ELSE enabled_at END,
+       verified_at=CASE WHEN $2 IS NOT NULL OR $3 IS NOT NULL OR $4 IS NOT NULL THEN NULL ELSE verified_at END,
+       verified_number=CASE WHEN $2 IS NOT NULL OR $3 IS NOT NULL OR $4 IS NOT NULL THEN NULL ELSE verified_number END,
+       updated_at=now() WHERE unit=$1`,
+      [unit, dataset, waba, token ? encryptMetaSecret(token) : null, input.enabled ?? null],
+    );
+    await client.query("INSERT INTO followup.meta_admin_audit(unit,action,actor) VALUES($1,$2,$3)", [unit, input.enabled === undefined ? "save_credentials" : input.enabled ? "enable_unit" : "disable_unit", actor]);
+  });
+}
+
+export async function setMetaPolicy(unit: MetaUnit, stage: MetaStage, action: "approve" | "enable" | "disable", actor: string, privacyReviewConfirmed: boolean) {
+  if (action !== "disable" && !metaEventName(stage)) throw new MetaInputError("Agendamento e pagamento permanecem somente internos nesta versão.");
+  if (action === "approve" && !privacyReviewConfirmed) throw new MetaInputError("Confirme a revisão de privacidade e dos Termos da Meta antes de aprovar.");
+  await withTransaction(async (client) => {
+    if (action === "approve") {
+      await client.query("UPDATE followup.meta_event_policy SET approved=true, approved_by=$3, approved_at=now(), updated_at=now() WHERE unit=$1 AND event_type=$2", [unit, stage, actor]);
+    } else if (action === "enable") {
+      const result = await client.query(
+        "UPDATE followup.meta_event_policy SET export_enabled=true, enabled_at=now(), updated_at=now() WHERE unit=$1 AND event_type=$2 AND approved=true RETURNING unit", [unit, stage],
+      );
+      if (!result.rowCount) throw new MetaInputError("A etapa precisa ser aprovada antes de habilitar a exportação.", 409);
+    } else {
+      await client.query("UPDATE followup.meta_event_policy SET export_enabled=false, enabled_at=NULL, updated_at=now() WHERE unit=$1 AND event_type=$2", [unit, stage]);
+    }
+    await client.query("INSERT INTO followup.meta_admin_audit(unit,action,actor,event_type) VALUES($1,$2,$3,$4)", [unit, `${action}_event`, actor, stage]);
+  });
+}
+
+export async function retryMetaEvent(id: string, actor: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new MetaInputError("Evento inválido.");
+  return withTransaction(async (client) => {
+    const row = await client.query<EventRow>(
+      "SELECT id,unit,event_type,occurred_at,encrypted_ctwa,state,attempts,source_event_id,chat_hash,ctwa_hash FROM followup.meta_events WHERE id=$1 FOR UPDATE", [id],
+    );
+    const event = row.rows[0];
+    if (!event || event.state !== "failed" || !event.encrypted_ctwa || !metaEventName(event.event_type)) throw new MetaInputError("Só falhas exportáveis com CTWA podem ser reprocessadas.", 409);
+    if (event.occurred_at.getTime() < Date.now() - 7 * 86_400_000) throw new MetaInputError("Evento fora da janela de 7 dias.", 409);
+    const check = await client.query(
+      `SELECT 1 FROM followup.meta_unit_settings s JOIN followup.meta_event_policy p ON p.unit=s.unit
+       JOIN followup.senders snd ON snd.code=s.unit
+       WHERE s.unit=$1 AND p.event_type=$2 AND s.enabled AND p.approved AND p.export_enabled
+       AND s.enabled_at <= $3 AND p.enabled_at <= $3 AND s.dataset_id IS NOT NULL AND s.waba_id IS NOT NULL AND s.encrypted_access_token IS NOT NULL
+       AND s.verified_at IS NOT NULL AND regexp_replace(COALESCE(snd.whatsapp_number,''),'[^0-9]','','g')=s.verified_number`,
+      [event.unit, event.event_type, event.occurred_at],
+    );
+    if (mode() !== "live" || !check.rowCount) throw new MetaInputError("A unidade e o tipo precisam estar habilitados, aprovados e em modo live.", 409);
+    await client.query("UPDATE followup.meta_events SET state='queued',auto_retry_count=0,reason=NULL,next_attempt_at=now(),updated_at=now() WHERE id=$1", [id]);
+    await client.query("INSERT INTO followup.meta_admin_audit(unit,action,actor,event_type,event_id) VALUES($1,'retry_event',$2,$3,$4)", [event.unit, actor, event.event_type, id]);
+    return { queued: true };
+  });
+}
+
+export async function testMetaConfiguration(unit: MetaUnit) {
+  const row = await getFollowupPool().query<UnitRow>("SELECT * FROM followup.meta_unit_settings WHERE unit=$1", [unit]);
+  const setting = row.rows[0];
+  if (!setting?.encrypted_access_token || !setting.dataset_id || !setting.waba_id) throw new MetaInputError("Informe token, dataset e WABA antes do teste.");
+  const version = graphVersion();
+  const token = decryptMetaSecret(setting.encrypted_access_token);
+  const sender = await getFollowupPool().query<{ whatsapp_number: string | null }>("SELECT whatsapp_number FROM followup.senders WHERE code=$1", [unit]);
+  const expectedNumber = (sender.rows[0]?.whatsapp_number || "").replace(/\D/g, "");
+  const [datasetResponse, wabaResponse] = await Promise.all([
+    fetch(`https://graph.facebook.com/${version}/${setting.dataset_id}?fields=id`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), cache: "no-store" }),
+    fetch(`https://graph.facebook.com/${version}/${setting.waba_id}/phone_numbers?fields=display_phone_number`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), cache: "no-store" }),
+  ]);
+  const wabaPayload = await wabaResponse.json().catch(() => ({})) as { data?: Array<{ display_phone_number?: string }> };
+  const numberMatches = Boolean(expectedNumber && wabaPayload.data?.some((item) => (item.display_phone_number || "").replace(/\D/g, "") === expectedNumber));
+  await getFollowupPool().query(
+    `UPDATE followup.meta_unit_settings SET verified_at=CASE WHEN $2 THEN now() ELSE NULL END,
+     verified_number=CASE WHEN $2 THEN $3 ELSE NULL END,
+     enabled=CASE WHEN $2 THEN enabled ELSE false END,
+     enabled_at=CASE WHEN $2 THEN enabled_at ELSE NULL END,updated_at=now() WHERE unit=$1`,
+    [unit, datasetResponse.ok && wabaResponse.ok && numberMatches, expectedNumber],
+  );
+  // Read-only access test. It does not prove that events will be accepted or attributed.
+  return { datasetReadable: datasetResponse.ok, wabaReadable: wabaResponse.ok, numberMatches, noEventSent: true };
+}
+
+export async function dispatchMetaEvents(limit = 20) {
+  const pool = getFollowupPool();
+  await pool.query("DELETE FROM followup.meta_ingest_rate WHERE minute_at < now() - interval '2 days'");
+  if (mode() !== "live") return { mode: "record_only", processed: 0 };
+  await pool.query("UPDATE followup.meta_events SET state='queued',next_attempt_at=now(),reason='Tentativa interrompida; reenviar com mesmo event_id' WHERE state='sending' AND updated_at < now()-interval '5 minutes'");
+  const results = { mode: "live", processed: 0, accepted: 0, failed: 0, retried: 0 };
+  for (let index = 0; index < Math.min(Math.max(limit, 1), 50); index++) {
+    const event = await withTransaction(async (client) => {
+      const row = await client.query<EventRow>(
+        `SELECT id,unit,event_type,occurred_at,encrypted_ctwa,state,attempts,auto_retry_count,source_event_id,chat_hash,ctwa_hash
+         FROM followup.meta_events WHERE state='queued' AND next_attempt_at<=now()
+         ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT 1`,
+      );
+      if (!row.rows[0]) return null;
+      await client.query("UPDATE followup.meta_events SET state='sending',attempts=attempts+1,auto_retry_count=auto_retry_count+1,updated_at=now() WHERE id=$1", [row.rows[0].id]);
+      return row.rows[0];
+    });
+    if (!event) break;
+    results.processed++;
+    const settings = await pool.query<UnitRow>("SELECT * FROM followup.meta_unit_settings WHERE unit=$1", [event.unit]);
+    const policies = await pool.query<PolicyRow>("SELECT * FROM followup.meta_event_policy WHERE unit=$1 AND event_type=$2", [event.unit, event.event_type]);
+    const setting = settings.rows[0]; const policy = policies.rows[0];
+    const currentNumber = await pool.query<{ whatsapp_number: string | null }>("SELECT whatsapp_number FROM followup.senders WHERE code=$1", [event.unit]);
+    const numberStillMatches = Boolean(setting?.verified_number && setting.verified_number === (currentNumber.rows[0]?.whatsapp_number || "").replace(/\D/g, ""));
+    const permitted = numberStillMatches && setting?.verified_at && setting.enabled && setting.enabled_at && event.occurred_at >= setting.enabled_at && setting.encrypted_access_token && setting.dataset_id && setting.waba_id &&
+      policy?.approved && policy.export_enabled && policy.enabled_at && event.occurred_at >= policy.enabled_at && event.encrypted_ctwa && metaEventName(event.event_type);
+    if (!permitted) {
+      await pool.query("UPDATE followup.meta_events SET state='awaiting_approval',reason='Configuração ou aprovação removida',next_attempt_at=NULL,updated_at=now() WHERE id=$1", [event.id]);
+      continue;
+    }
+    let httpStatus: number | null = null; let trace: string | null = null; let errorCode: string | null = null; let eventsReceived = 0;
+    try {
+      if (event.occurred_at.getTime() < Date.now() - 7 * 86_400_000) throw new Error("outside_meta_window");
+      const response = await fetch(`https://graph.facebook.com/${graphVersion()}/${setting.dataset_id}/events`, {
+        method: "POST", headers: { Authorization: `Bearer ${decryptMetaSecret(setting.encrypted_access_token! )}`, "content-type": "application/json" },
+        body: JSON.stringify({ data: [{ event_name: metaEventName(event.event_type), event_time: Math.floor(event.occurred_at.getTime() / 1000), event_id: event.id,
+          action_source: "business_messaging", messaging_channel: "whatsapp", user_data: { ctwa_clid: decryptMetaSecret(event.encrypted_ctwa!), whatsapp_business_account_id: setting.waba_id } }] }),
+        signal: AbortSignal.timeout(15_000), cache: "no-store",
+      });
+      httpStatus = response.status;
+      const payload = await response.json().catch(() => ({})) as { events_received?: number; fbtrace_id?: string; error?: { code?: number } };
+      trace = payload.fbtrace_id || response.headers.get("x-fb-trace-id");
+      errorCode = payload.error?.code ? String(payload.error.code) : null;
+      eventsReceived = Number(payload.events_received) || 0;
+    } catch (error) { errorCode = error instanceof Error ? error.message.slice(0, 80) : "network_error"; }
+    const nextState = classifyMetaDelivery({ httpStatus, eventsReceived, errorCode, autoRetryCount: event.auto_retry_count });
+    const delay = Math.min(3600, 30 * 2 ** event.auto_retry_count);
+    await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE followup.meta_events SET state=$2,reason=$3,fbtrace_id=$4,next_attempt_at=CASE WHEN $2='queued' THEN now()+($5::integer * interval '1 second') ELSE NULL END,
+         accepted_at=CASE WHEN $2='accepted' THEN now() ELSE accepted_at END,updated_at=now() WHERE id=$1`,
+        [event.id, nextState, nextState === "accepted" ? null : errorCode || `HTTP ${httpStatus || "sem resposta"}`, trace, delay],
+      );
+      await client.query("INSERT INTO followup.meta_delivery_attempts(event_id,http_status,outcome,error_code,fbtrace_id) VALUES($1,$2,$3,$4,$5)", [event.id, httpStatus, nextState, errorCode, trace]);
+    });
+    if (nextState === "accepted") results.accepted++; else if (nextState === "queued") results.retried++; else results.failed++;
+  }
+  return results;
+}

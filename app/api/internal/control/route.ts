@@ -3,6 +3,7 @@ import { dispatchScheduledMessages } from "@/lib/dispatch";
 import { dispatchBroadcasts } from "@/lib/broadcasts";
 import { enrollActiveCampaigns, queueDueMessages } from "@/lib/control-plane";
 import { refreshAllSenderConnections } from "@/lib/uazapi-connections";
+import { dispatchMetaEvents } from "@/lib/meta-events";
 
 export const runtime = "nodejs";
 
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
     if (body.action === "queue") return NextResponse.json(await queueDueMessages(limit));
     if (body.action === "dispatch") return NextResponse.json(await dispatchScheduledMessages(limit));
     if (body.action === "broadcast") return NextResponse.json(await dispatchBroadcasts(limit));
+    if (body.action === "meta") return NextResponse.json(await dispatchMetaEvents(limit));
     return NextResponse.json({ error: "Ação inválida." }, { status: 400 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha no worker.";

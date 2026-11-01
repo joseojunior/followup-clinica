@@ -5,7 +5,7 @@ const excludedApiPrefixes = ["/api/internal", "/api/webhooks", "/api/health"];
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (excludedApiPrefixes.some((prefix) => pathname.startsWith(prefix))) return NextResponse.next();
+  if (excludedApiPrefixes.some((prefix) => pathname.startsWith(prefix)) || pathname === "/api/integrations/n8n/meta-events") return NextResponse.next();
   const isLocalRequest = request.nextUrl.hostname === "localhost" || request.nextUrl.hostname === "127.0.0.1";
   if (isLocalRequest && process.env.DEV_BYPASS_AUTH === "true") {
     return NextResponse.next();

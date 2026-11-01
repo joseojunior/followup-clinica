@@ -44,17 +44,18 @@ async function tick() {
     const queueRun = await executeSafely("queue");
     const dispatchRun = await executeSafely("dispatch");
     const broadcastRun = await executeSafely("broadcast");
+    const metaRun = await executeSafely("meta");
     const enrolled = enrollmentRun.result;
     const queued = queueRun.result;
     const dispatched = dispatchRun.result;
     const broadcasts = broadcastRun.result;
     const activity = (enrolled.enrolled || 0) + (queued.queued || 0) +
       (dispatched.sent || 0) + (dispatched.simulated || 0) +
-      (broadcasts.sent || 0) + (broadcasts.simulated || 0);
+      (broadcasts.sent || 0) + (broadcasts.simulated || 0) + (metaRun.result.processed || 0);
     const disconnected = connectionsRun.ok
       ? (connectionsRun.result.connections || []).filter((connection) => connection.status !== "connected").map((connection) => connection.code)
       : ["monitor_unavailable"];
-    if (activity || shouldEnroll || disconnected.length) console.log(new Date().toISOString(), { disconnected, enrolled, queued, dispatched, broadcasts });
+    if (activity || shouldEnroll || disconnected.length) console.log(new Date().toISOString(), { disconnected, enrolled, queued, dispatched, broadcasts, meta: metaRun.result });
   } catch (error) {
     console.error(new Date().toISOString(), error instanceof Error ? error.message : error);
   } finally {

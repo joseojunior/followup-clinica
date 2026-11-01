@@ -30,6 +30,8 @@ O painel inicial usa dados demonstrativos até a conexão do banco ser configura
 
 Consulte [o controle operacional](docs/operation-control.md) antes de ativar qualquer envio real.
 
+Para rastrear as etapas do WhatsApp e preparar a Conversions API da Meta, consulte [Eventos Meta](docs/meta-events.md). A integração inicia em `record_only` e não envia eventos reais antes do piloto e da revisão de privacidade.
+
 ## Leads do banco e CSV
 
 - Em **Leads**, selecione a unidade e use **Sincronizar banco**. A operação lê `public.*`,

@@ -49,6 +49,17 @@ function getSourcePool(sourceKey: SourceKey) {
   return pool;
 }
 
+/** Identificação mínima para eventos Meta; não expõe dados clínicos ou contato. */
+export async function findSourceMetaLead(sourceKey: SourceKey, chatId: string) {
+  const result = await getSourcePool(sourceKey).query<{
+    chat_id: string; ctwa_clid: string | null; agendado: boolean | null; id_agendamento: string | null;
+  }>(
+    `SELECT chat_id, ctwa_clid, agendado, id_agendamento FROM ${sourceDefinitions[sourceKey].table} WHERE chat_id = $1 LIMIT 1`,
+    [chatId],
+  );
+  return result.rows[0] || null;
+}
+
 function sourceControlColumns(sourceKey: SourceKey) {
   return sourceKey === "usuarios_sdr"
     ? `followup_stage, "followUp_stag"::text AS legacy_followup_stage, followup_date`

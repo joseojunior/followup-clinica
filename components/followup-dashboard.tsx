@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { LogoutButton } from "@/components/logout-button";
 import { N8nPanel } from "@/components/n8n-panel";
 import { HostingerPanel } from "@/components/hostinger-panel";
+import { MetaEventsPanel } from "@/components/meta-events-panel";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type ContentKind = "Texto" | "Sticker + texto" | "Imagem + texto";
@@ -32,6 +33,7 @@ const navItems = [
   { label: "Biblioteca", mark: "✦" },
   { label: "Inteligência", mark: "◌" },
   { label: "Automações", mark: "⌘" },
+  { label: "Eventos Meta", mark: "◈" },
   { label: "Infraestrutura", mark: "▤" },
   { label: "Conexões", mark: "⌁" },
   { label: "Histórico", mark: "≋" },
@@ -926,6 +928,7 @@ export function FollowupDashboard() {
         />}
 
         {activeNav === "Automações" && <N8nPanel />}
+        {activeNav === "Eventos Meta" && <MetaEventsPanel />}
 
         {activeNav === "Infraestrutura" && <HostingerPanel />}
 
