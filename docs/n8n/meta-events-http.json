@@ -1,0 +1,24 @@
+{
+  "name": "Exemplo — registrar marco na plataforma",
+  "active": false,
+  "nodes": [{
+    "id": "platform-meta-events-http",
+    "name": "Registrar marco na plataforma",
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.2,
+    "position": [0, 0],
+    "parameters": {
+      "method": "POST",
+      "url": "https://followapi.leticiaatd.online/api/integrations/n8n/meta-events",
+      "authentication": "genericCredentialType",
+      "genericAuthType": "httpHeaderAuth",
+      "sendBody": true,
+      "specifyBody": "json",
+      "jsonBody": "={{ Object.fromEntries(Object.entries({unit: $json.unit, chat_id: $json.chat_id, phone: $json.phone, event_type: $json.event_type, occurred_at: $json.occurred_at, source_event_id: $json.source_event_id, ctwa_clid: $json.ctwa_clid, source_id: $json.source_id}).filter(([key, value]) => value !== undefined && value !== null && value !== '')) }}",
+      "options": {"timeout": 15000}
+    }
+  }],
+  "connections": {},
+  "pinData": {},
+  "settings": {"executionOrder": "v1"}
+}

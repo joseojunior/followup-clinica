@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const META_UNITS = ["sender_1", "sender_2"] as const;
 export const META_STAGES = ["conversation_started", "lead_qualified", "appointment_confirmed", "payment_confirmed"] as const;
@@ -15,7 +15,7 @@ export function equalDigest(value: string, expected: string) {
 export function validateMetaInput(value: unknown, now = Date.now()) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Corpo JSON inválido.");
   const body = value as Record<string, unknown>;
-  const allowed = new Set(["unit", "chat_id", "event_type", "occurred_at", "source_event_id", "ctwa_clid"]);
+  const allowed = new Set(["unit", "chat_id", "phone", "source_id", "event_type", "occurred_at", "source_event_id", "ctwa_clid"]);
   if (Object.keys(body).some((key) => !allowed.has(key))) throw new Error("O corpo contém campos não permitidos.");
   if (!isMetaUnit(body.unit) || !isMetaStage(body.event_type)) throw new Error("Unidade ou etapa inválida.");
   for (const field of ["chat_id", "source_event_id"] as const) {
@@ -25,11 +25,43 @@ export function validateMetaInput(value: unknown, now = Date.now()) {
   const timestamp = Date.parse(body.occurred_at);
   if (!Number.isFinite(timestamp) || timestamp > now + 5 * 60_000 || timestamp < now - 30 * 86_400_000) throw new Error("occurred_at fora do intervalo permitido de 30 dias.");
   if (body.ctwa_clid !== undefined && (body.event_type !== "conversation_started" || typeof body.ctwa_clid !== "string" || !/^[!-~]{12,1000}$/.test(body.ctwa_clid))) throw new Error("ctwa_clid inválido ou enviado fora da primeira conversa.");
+  const phone = body.phone === undefined ? null : normalizeMetaPhone(body.phone);
+  if (body.source_id !== undefined && (typeof body.source_id !== "string" || !/^\d{5,30}$/.test(body.source_id) || body.event_type !== "conversation_started")) throw new Error("source_id deve ser o ID do anúncio na primeira mensagem.");
   return {
     unit: body.unit, eventType: body.event_type, chatId: (body.chat_id as string).trim(),
     occurredAt: new Date(timestamp), sourceEventId: (body.source_event_id as string).trim(),
     ctwaClid: (body.ctwa_clid as string | undefined) || null,
+    phone, sourceId: (body.source_id as string | undefined) || null,
   };
+}
+
+export function normalizeMetaPhone(value: unknown) {
+  if (typeof value !== "string" || !/^\+?[\d ()-]+$/.test(value)) throw new Error("phone inválido; envie telefone internacional com DDI.");
+  const phone = value.replace(/\D/g, "");
+  if (!/^[1-9]\d{7,14}$/.test(phone)) throw new Error("phone inválido; envie telefone internacional com DDI.");
+  return phone;
+}
+
+export function protectedPhoneHash(unit: MetaUnit, phone: string, key: Buffer) {
+  return createHmac("sha256", key).update(`meta-phone-v1:${unit}:${phone}`).digest("hex");
+}
+
+/** Only documented tracking_specs entries; never recursively choose an arbitrary ID. */
+export function extractAdDestination(value: unknown) {
+  const specs = (value as { tracking_specs?: unknown } | null)?.tracking_specs;
+  if (!Array.isArray(specs)) throw new Error("tracking_specs ausente");
+  const datasets = new Set<string>(); const pages = new Set<string>();
+  for (const spec of specs) {
+    if (!spec || typeof spec !== "object") continue;
+    for (const [field, target] of [["dataset", datasets], ["page", pages]] as const) {
+      const ids = (spec as Record<string, unknown>)[field];
+      if (ids === undefined) continue;
+      if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !/^\d{5,30}$/.test(id))) throw new Error("IDs inválidos em tracking_specs");
+      ids.forEach((id) => target.add(id));
+    }
+  }
+  if (datasets.size !== 1 || pages.size !== 1) throw new Error("Dataset/página ausente ou ambíguo");
+  return { datasetId: [...datasets][0], pageId: [...pages][0] };
 }
 
 export function metaEventName(stage: MetaStage): "LeadSubmitted" | "QualifiedLead" | null {

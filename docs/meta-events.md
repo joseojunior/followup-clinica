@@ -1,34 +1,60 @@
-# Eventos WhatsApp → Meta
+# Rastreamento Uazapi → n8n → plataforma → Meta
 
-## Estado inicial
+O banco followup é o registro oficial, sem Google Sheets. A API não exige que o chat já exista nas tabelas-fonte. A tabela legada rastreio_whats.whatsapp_anuncio e seus consumidores não são modificados pela plataforma.
 
-A integração começa em `META_EXPORT_MODE=record_only`. Nenhum evento é enviado à Meta nesse modo, mesmo que uma unidade/tipo esteja marcado como habilitado. A migração `017_meta_events.sql` cria configurações por unidade, histórico de CTWA, eventos, tentativas, limite de entrada e auditoria. Eventos anteriores à migração permanecem internos; não há backfill.
+## Configuração
 
-As alterações administrativas exigem uma sessão autenticada pelo Supabase. Como o painel é usado por uma única conta, não há allowlist adicional de e-mails. Defina `AI_SETTINGS_ENCRYPTION_KEY` (32 bytes em base64), `META_GRAPH_API_VERSION` vigente e `META_INGEST_PUBLIC_URL` HTTPS. O token Meta é criptografado no banco; o token de entrada n8n é gerado pelo painel, armazenado como hash e mostrado uma única vez.
+Em Eventos Meta, gere um token diferente por unidade (mostrado uma vez, armazenado como hash). No n8n use HTTPS e Authorization: Bearer TOKEN_DA_UNIDADE. O token identifica a unidade; divergência no corpo retorna 403. Login Supabase é necessário apenas para configurar o painel.
 
-## Nó HTTP Request no n8n
+Token Meta é outra credencial: cadastre no painel com a WABA da unidade. Configure META_GRAPH_API_VERSION vigente e mantenha META_EXPORT_MODE=record_only. O token precisa ler anúncios/tracking_specs e ter acesso ao dataset/CAPI e à WABA. Dataset manual é opcional: vazio significa descoberta; preenchido restringe o destino. Testar leitura verifica a relação WABA/dataset e o número da unidade. A permissão de leitura do anúncio é testada durante sua descoberta.
 
-Crie uma credencial Bearer **diferente para cada unidade** em **Eventos Meta → Guia do n8n**. Use `POST` para `META_INGEST_PUBLIC_URL`, corpo JSON, `Content-Type: application/json` e timeout de 15 segundos. O token determina a unidade; um corpo com unidade diferente recebe `403`.
+AI_SETTINGS_ENCRYPTION_KEY protege tokens/CTWA e deriva o HMAC de telefone com domínio separado. Preserve a chave em backup seguro. Telefone puro não é armazenado. Chat usa hash separado por unidade. Telefone repetido em chats diferentes sinaliza revisão, nunca merge; telefone divergente no mesmo chat retorna 409.
+
+## HTTP Request
+
+POST https://followapi.leticiaatd.online/api/integrations/n8n/meta-events
+
+Content-Type: application/json; Authorization: Bearer TOKEN; timeout 15 segundos.
 
 ```json
 {
   "unit": "sender_1",
-  "chat_id": "ID_DO_CHAT_NA_FONTE",
+  "chat_id": "5511999999999@s.whatsapp.net",
+  "phone": "+5511999999999",
   "event_type": "conversation_started",
-  "occurred_at": "2026-11-01T14:30:00Z",
-  "source_event_id": "ID_ESTAVEL_DA_PRIMEIRA_MENSAGEM",
-  "ctwa_clid": "CTWA_CLID_DO_REFERRAL"
+  "occurred_at": "2026-11-03T12:00:00Z",
+  "source_event_id": "ID_REAL_ESTAVEL_DA_MENSAGEM",
+  "ctwa_clid": "CTWA_REAL_DO_REFERRAL",
+  "source_id": "123456789012345"
 }
 ```
 
-Use `sender_2` para a Unidade 2. Coloque o nó após persistir a primeira mensagem/referral (`conversation_started`), após confirmar a qualificação (`lead_qualified`), após confirmar o agendamento (`appointment_confirmed`) e após marcar o pagamento (`payment_confirmed`). `ctwa_clid` é aceito somente na primeira mensagem. Em agendamento, `source_event_id` **deve** ser o `id_agendamento` da fonte. Nas demais etapas, escolha um ID de mudança de negócio estável; nunca o ID da execução do n8n. Não envie nome, telefone, tratamento, conteúdo da conversa, nem token Meta.
+Troque valores ilustrativos, inclusive horário. Unidade 2 usa sender_2 e outro token. Campos antigos sem phone/source_id continuam aceitos, mas não há descoberta/exportação sem anúncio. Não envie dataset, página, nome, e-mail, mensagem ou tratamento: campos extras são rejeitados.
 
-`202` significa registrado **na plataforma**, não entregue à Meta; `200` é duplicata idempotente. Corrija `400`, `403`, `404` e `409`. Repita falhas de rede, `429` e `5xx` com o mesmo `source_event_id`, respeitando `Retry-After` em `429`. Há limite de 120 requisições/minuto por token. A lista no painel mostra o estado após a ingestão e as tentativas do worker.
+No primeiro anexo: telefone = body.Payload.Content.Contact.PhoneNumber; CTWA = body.Payload.Content.LastMessage.Ad.CTWaCLId; anúncio = body.Payload.Content.LastMessage.Ad.SourceId. No outro formato: chat = body.data.key.remoteJid; ID de mensagem = body.data.key.id; timestamp = body.data.messageTimestamp (Unix em segundos: converter para ISO). O primeiro anexo não tem amostra dos IDs de chat/mensagem: mapeie os campos reais, não invente ID pela execução n8n.
 
-## Privacidade e piloto
+Importe o exemplo docs/n8n/meta-events-http.json e alimente-o com os campos normalizados acima. Escolha Header Auth no n8n, nome Authorization, valor Bearer TOKEN. O arquivo não contém credenciais/pinData e não ativa workflows.
 
-As quatro etapas aparecem no funil. `payment_confirmed` e `appointment_confirmed` são apenas internas nesta versão. `conversation_started` e `lead_qualified` são candidatas, mas começam desabilitadas. Antes de habilitar um tipo, revise os dados e os [Termos das Ferramentas de Negócios da Meta](https://www.facebook.com/legal/technology_terms) para o contexto clínico; a aprovação no painel registra usuário e horário, mas não substitui a avaliação. Em seguida, teste os IDs e o número da WABA; só então habilite unidade e tipo. O teste de configuração é de leitura e não envia conversão.
+202 = registrado aqui, não entregue à Meta; 200 = duplicata. Corrija 400/403/409. Em rede/5xx repita o mesmo corpo, horário e source_event_id. Em 429 aguarde Retry-After. Limite: 120/min/unidade.
 
-Para o piloto técnico, altere `META_EXPORT_MODE=live` **somente após** aprovação de privacidade e autorização operacional. Use um novo caso consentido e aprovado. O worker envia para `/{dataset_id}/events` com `action_source=business_messaging`, `messaging_channel=whatsapp`, `ctwa_clid` bruto em `user_data` e `whatsapp_business_account_id`. `LeadSubmitted` e `QualifiedLead` são os únicos nomes exportáveis nesta versão. O mesmo UUID de evento é reutilizado em retries; uma interrupção após aceitação pode causar reenvio, por isso a verificação no Gerenciador de Eventos é indispensável. O painel registra `events_received` e `fbtrace_id` como **aceitação da API**, não atribuição de campanha.
+## Outros marcos
 
-Compare o número de alterações no n8n com os eventos recebidos na plataforma e os eventos aceitos no Gerenciador de Eventos. Revise falhas permanentes antes de clicar em **Reprocessar**. Um novo clique no mesmo chat é associado pelo horário do evento; quando só existir o CTWA atual na fonte, o painel indica “CTWA da fonte”.
+Envie unit/chat/phone, horário real, event_type e source_event_id estáveis. Remova ctwa_clid/source_id: usa o último clique anterior ao marco.
+
+| Marco | event_type | source_event_id |
+|---|---|---|
+| Qualificação | lead_qualified | ID da mudança; se única por lead, chat + ":lead_qualified" |
+| Agendamento | appointment_confirmed | id_agendamento |
+| Pagamento interno | payment_confirmed | chat + ":payment_confirmed" |
+
+Sem ID de transação não há Purchase/receita. Pagamento é somente um marco por chat; pagamentos múltiplos não são distinguidos. O parser “Negócio Fechado” pode emitir esse marco interno sem inferir compra automaticamente. Para idempotência de um marco único, persista também o horário original: retry não usa agora.
+
+## Descoberta, entrega e corte
+
+O worker faz GET /source_id?fields=tracking_specs, exige um único dataset e página nos arrays explícitos, e compara com GET /waba_id/dataset. Não escolhe o primeiro destino arbitrariamente. Ausência, ambiguidade ou permissão insuficiente fica registrada sem envio. Rede/429/5xx têm até cinco tentativas de descoberta. Salvar token/WABA e testar com sucesso permite repetir descobertas em revisão.
+
+Descoberta faz somente GET inclusive em record_only. POST de eventos exige live, unidade/tipo aprovados e habilitados antes do acontecimento, identidade não ambígua e destino validado. Conversa/qualificação são candidatos a LeadSubmitted/QualifiedLead; agendamento/pagamento somente internos. Não há backfill dos acontecimentos recebidos em record_only. A Meta recebe CTWA/WABA, nunca ph/fn/ln/em ou texto clínico. Aceitação API não garante atribuição.
+
+Preserve nós Postgres legados; adicione primeiro o HTTP da plataforma em paralelo, record_only, e compare contadores por unidade. Antes de qualquer live, desative os HTTP diretos à Meta correspondentes no n8n para não duplicar. A mudança para live exige revisão de privacidade e piloto aprovado. Não habilite Purchase nesta versão.
+
+Se a apikey nos dados fixados do export for ativa, revogue/rotacione no provedor e remova pinData antes de compartilhar. Não copie credenciais dos anexos para o Git.
