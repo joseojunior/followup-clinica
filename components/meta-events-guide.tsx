@@ -65,7 +65,7 @@ export function MetaEventsGuide({ unit, url, timestamp }: { unit: MetaUnit; url:
           <dt>401 / 413</dt><dd>Confira Bearer token / reduza o corpo para até 16 KB.</dd>
           <dt>429 / rede / 5xx</dt><dd>Repita com atraso e limite de tentativas. Em 429 respeite Retry-After. Preserve o mesmo corpo, source_event_id e occurred_at. Limite da API: 120 requisições/minuto/unidade.</dd>
         </dl>
-        <p>Sem CTWA: marco interno, sem atribuição a anúncio. Sem destino válido: revisar source_id, acesso do token ao anúncio, WABA e versão Graph. Dataset manual é opcional; vazio permite descoberta. Testar leitura verifica WABA/dataset/número; leitura do anúncio é testada durante a descoberta.</p>
+        <p>Sem CTWA: marco interno, sem atribuição a anúncio. Os campos de WABA e dataset não são exigidos no formulário para receber e armazenar eventos. A exportação sem WABA ainda está em revisão; remover esses campos não libera envios nem substitui a avaliação de privacidade do contexto clínico.</p>
         <p>Antes de habilitar exportação na plataforma, desative o HTTP direto à Meta correspondente no n8n para não duplicar. Liberação real exige revisão de privacidade e piloto aprovado; não há backfill dos eventos recebidos em somente registro.</p>
       </details>
     </div>

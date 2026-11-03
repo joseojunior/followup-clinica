@@ -6,7 +6,9 @@ O banco followup é o registro oficial, sem Google Sheets. A API não exige que 
 
 Em Eventos Meta, gere um token diferente por unidade (mostrado uma vez, armazenado como hash). No n8n use HTTPS e Authorization: Bearer TOKEN_DA_UNIDADE. O token identifica a unidade; divergência no corpo retorna 403. Login Supabase é necessário apenas para configurar o painel.
 
-Token Meta é outra credencial: cadastre no painel com a WABA da unidade. Configure META_GRAPH_API_VERSION vigente e mantenha META_EXPORT_MODE=record_only. O token precisa ler anúncios/tracking_specs e ter acesso ao dataset/CAPI e à WABA. Dataset manual é opcional: vazio significa descoberta; preenchido restringe o destino. Testar leitura verifica a relação WABA/dataset e o número da unidade. A permissão de leitura do anúncio é testada durante sua descoberta.
+Token Meta é outra credencial: pode ser cadastrado no painel, criptografado, sem preencher WABA ou dataset. Esses dois campos foram removidos apenas da interface; salvar token não apaga IDs já existentes nem remove as validações do backend. Receber e armazenar eventos não depende desses IDs.
+
+A exportação sem WABA ainda requer revisão técnica e de privacidade; não está habilitada por essa mudança de formulário. O servidor continua em META_EXPORT_MODE=record_only. Não reenvie eventos clínicos reais para validação de entrega. Qualquer futuro teste externo deve usar um cenário não sensível aprovado, sem CTWA de paciente.
 
 AI_SETTINGS_ENCRYPTION_KEY protege tokens/CTWA e deriva o HMAC de telefone com domínio separado. Preserve a chave em backup seguro. Telefone puro não é armazenado. Chat usa hash separado por unidade. Telefone repetido em chats diferentes sinaliza revisão, nunca merge; telefone divergente no mesmo chat retorna 409.
 
