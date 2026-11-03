@@ -22,11 +22,13 @@ try {
       const r=await fetch("http://127.0.0.1:3000/api/integrations/n8n/meta-events",{method:"POST",headers:{Authorization:"Bearer "+token,"content-type":"application/json","x-forwarded-proto":"https"},body:JSON.stringify(body)});
       const result=await r.json(); return {status:r.status,...result};
     };
-    const base={unit,chat_id:chat,event_type:"conversation_started",occurred_at:time(120),source_event_id:run+unit+"first",ctwa_clid:"SyntheticClickIdentifierFirst"};
+    const phone="999"+BigInt("0x"+randomBytes(5).toString("hex")).toString().padStart(12,"0");
+    const base={unit,chat_id:chat,phone,event_type:"conversation_started",occurred_at:time(120),source_event_id:run+unit+"first",ctwa_clid:"SyntheticClickIdentifierFirst"};
     assert.equal((await call({...base,unit:unit==="sender_1"?"sender_2":"sender_1"})).status,403);
     const first=await call(base); assert.equal(first.status,202); assert.equal(first.state,"awaiting_approval");
     assert.equal((await call(base)).status,200);
     assert.equal((await call({...base,occurred_at:"bad"})).status,400);
+    assert.equal((await call({...base,phone:phone.slice(0,-1)+(phone.endsWith("1")?"2":"1"),source_event_id:run+unit+"wrong-phone"})).status,409);
     const qualified=await call({unit,chat_id:chat,event_type:"lead_qualified",occurred_at:time(90),source_event_id:run+unit+"qualified"});
     assert.equal(qualified.status,202);
     assert.equal((await call({...base,source_event_id:run+unit+"second",occurred_at:time(60),ctwa_clid:"SyntheticClickIdentifierSecond"})).status,202);
@@ -38,7 +40,12 @@ try {
     const noClick=await call({unit,chat_id:chat+"empty",event_type:"lead_qualified",occurred_at:time(10),source_event_id:run+unit+"empty"});
     chats.push(sha(unit+":"+chat+"empty"));
     assert.equal(noClick.status,202); assert.equal(noClick.state,"no_ctwa");
-    console.log(unit+": auth cruzada, duplicata, timestamp, chat novo, CTWA ausente e histórico de dois cliques OK");
+    const alias=chat+"alias"; chats.push(sha(unit+":"+alias));
+    const shared=await call({unit,chat_id:alias,phone,event_type:"lead_qualified",occurred_at:time(10),source_event_id:run+unit+"shared"});
+    assert.equal(shared.status,202);
+    const flagged=(await db.query("SELECT identity_conflict FROM followup.meta_events WHERE id=$1",[shared.id])).rows[0];
+    assert.equal(flagged.identity_conflict,true);
+    console.log(unit+": auth cruzada, duplicata, telefone divergente/compartilhado, timestamp, chat novo, CTWA ausente e histórico de dois cliques OK");
   }
 } finally {
   await db.query("BEGIN");
