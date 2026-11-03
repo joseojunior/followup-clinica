@@ -51,7 +51,9 @@ export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
   const chatHash = digest(`${event.unit}:${event.chatId}`);
   const phoneHash = event.phone ? protectedPhoneHash(event.unit, event.phone, Buffer.from(process.env.AI_SETTINGS_ENCRYPTION_KEY || "", "base64")) : null;
   if (event.phone && !metaEncryptionReady()) throw new MetaInputError("Proteção de identidade indisponível no servidor.", 503);
-  const inputHash = digest(JSON.stringify([chatHash,event.occurredAt.toISOString(),event.ctwaClid,event.sourceId,phoneHash]));
+  const inputParts: unknown[] = [chatHash,event.occurredAt.toISOString(),event.ctwaClid,event.sourceId,phoneHash];
+  if (Object.keys(event.attribution).length) inputParts.push(event.attribution);
+  const inputHash = digest(JSON.stringify(inputParts));
   const pool = getFollowupPool();
   const existing = await pool.query<EventRow & {input_hash: string | null}>(
     `SELECT input_hash,id, unit, event_type, source_event_id, chat_hash, occurred_at, ctwa_hash, state, attempts, encrypted_ctwa
@@ -82,9 +84,9 @@ export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
       const previous=await client.query<{source_id:string|null}>("SELECT source_id FROM followup.meta_clicks WHERE unit=$1 AND chat_hash=$2 AND ctwa_hash=$3",[event.unit,chatHash,digest(event.ctwaClid)]);
       if (previous.rows[0] && previous.rows[0].source_id!==event.sourceId) throw new MetaInputError("CTWA já registrado com outro source_id.",409);
       await client.query(
-        `INSERT INTO followup.meta_clicks(unit, chat_hash, ctwa_hash, encrypted_ctwa, observed_at,source_id)
-         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (unit, chat_hash, ctwa_hash) DO NOTHING`,
-        [event.unit, chatHash, digest(event.ctwaClid), encryptMetaSecret(event.ctwaClid), event.occurredAt, event.sourceId],
+        `INSERT INTO followup.meta_clicks(unit, chat_hash, ctwa_hash, encrypted_ctwa, observed_at,source_id,attribution)
+         VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT (unit, chat_hash, ctwa_hash) DO NOTHING`,
+        [event.unit, chatHash, digest(event.ctwaClid), encryptMetaSecret(event.ctwaClid), event.occurredAt, event.sourceId,JSON.stringify(event.attribution)],
       );
     }
     const click = await client.query<{ id: string; ctwa_hash: string; encrypted_ctwa: string; source_id: string | null; dataset_id: string | null; page_id: string | null; resolution_state: string }>(
@@ -112,7 +114,7 @@ export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
       [event.unit, event.eventType, event.sourceEventId, chatHash, maskChat(event.chatId), event.occurredAt, ctwa?.ctwa_hash || null, ctwa?.encrypted_ctwa || null, origin, state, reason,ctwa?.id || null,phoneHash,identityConflict,ctwa?.source_id || null,ctwa?.dataset_id || null,ctwa?.page_id || null,exportEligible],
     );
     if (inserted.rows[0]) {
-      await client.query("UPDATE followup.meta_events SET input_hash=$2 WHERE id=$1", [inserted.rows[0].id,inputHash]);
+      await client.query("UPDATE followup.meta_events SET input_hash=$2,attribution=$3::jsonb WHERE id=$1", [inserted.rows[0].id,inputHash,JSON.stringify(event.attribution)]);
       return { ...inserted.rows[0], duplicate: false };
     }
     const raced = await client.query<EventRow & {input_hash: string | null}>(

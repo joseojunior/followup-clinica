@@ -39,6 +39,35 @@ Importe o exemplo docs/n8n/meta-events-http.json e alimente-o com os campos norm
 
 ## Outros marcos
 
+### Metadados opcionais no primeiro envio
+
+No corpo conversation_started, pode acrescentar attribution:
+
+```json
+{
+  "attribution": {
+    "utm_source": "facebook",
+    "utm_medium": "paid",
+    "utm_campaign": "campanha_exemplo",
+    "utm_content": "criativo_01",
+    "utm_term": "publico_exemplo",
+    "ad_title": "Título do anúncio",
+    "source_url": "https://exemplo.com/anuncio",
+    "thumbnail_url": "https://exemplo.com/imagem.jpg"
+  }
+}
+```
+
+É um fragmento para adicionar ao corpo, não uma requisição completa. O bloco inteiro e cada campo são opcionais; null/vazio é omitido. Sem o bloco, o contrato antigo continua válido. Não adicione attribution preenchido aos demais marcos. Campos desconhecidos/tipos inválidos retornam 400.
+
+Armazenamento interno: followup.meta_events.attribution preserva o primeiro contato (inclusive orgânico sem CTWA); followup.meta_clicks.attribution preserva metadados do clique quando há CTWA. Um novo clique cria seu próprio histórico. Não sobrescrevemos metadados de um clique já capturado; retry deve manter o mesmo conteúdo/horário/IDs, ou retorna 409. Alterar a ordem das propriedades não altera a idempotência.
+
+UTMs têm limite de 256 caracteres cada; título, 512; URLs, 2048, apenas HTTPS sem credenciais. Corpo total: até 16 KB em bytes. A plataforma não baixa thumbnails nem acessa source_url; não extrai UTMs automaticamente nem envia esses campos à Meta. Envie somente dados de marketing, nunca informações do paciente, tokens ou texto da conversa em UTMs/URLs.
+
+No webhook dos anexos, Title/SourceUrl/ThumbnailUrl ficam em body.Payload.Content.LastMessage.Ad; o n8n pode mapeá-los para ad_title/source_url/thumbnail_url. UTMs devem vir de dados efetivamente disponíveis, não podem ser deduzidas do CTWA.
+
+### Eventos posteriores
+
 Envie unit/chat/phone, horário real, event_type e source_event_id estáveis. Remova ctwa_clid/source_id: usa o último clique anterior ao marco.
 
 | Marco | event_type | source_event_id |

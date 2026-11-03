@@ -41,6 +41,7 @@ export function MetaEventsGuide({ unit, url, timestamp }: { unit: MetaUnit; url:
           <dt>occurred_at</dt><dd>Data real da mensagem/mudança em ISO 8601, com Z ou fuso. Em retries, preserve o horário original.</dd>
           <dt>source_event_id</dt><dd>Primeiro contato: ID real da mensagem WhatsApp. Agendamento: id_agendamento. Qualificação/pagamento únicos por chat: chave persistida chat + etapa. Não use ID da execução n8n, valor aleatório ou um novo horário a cada retry.</dd>
           <dt>ctwa_clid e source_id</dt><dd>Somente no primeiro contato: identificador bruto do clique e ID do anúncio. Não aplique hash no CTWA. A plataforma consulta dataset/página no backend; não envie dataset_id ou page_id no JSON.</dd>
+          <dt>attribution (opcional)</dt><dd>Somente no primeiro contato: UTMs, ad_title, source_url e thumbnail_url. Envie apenas os campos recebidos ou omita o bloco inteiro. Ficam no banco para futuros dashboards, mesmo sem CTWA; não são enviados à Meta. Não inclua dados do paciente, credenciais ou conversa em UTMs/URLs. UTMs: até 256 caracteres cada; título: 512; URLs: 2048, HTTPS sem credenciais. Nenhuma URL/imagem é baixada.</dd>
         </dl>
         <p>Qualificação prepara QualifiedLead para revisão. Agendamento e pagamento permanecem internos; pagamento sem ID de transação não gera Purchase e representa apenas um marco por chat. Não envie nome, e-mail, tratamento, conversa ou token Meta.</p>
       </details>
@@ -52,6 +53,7 @@ export function MetaEventsGuide({ unit, url, timestamp }: { unit: MetaUnit; url:
           <dt>Chat no outro formato</dt><dd><code>body.data.key.remoteJid</code></dd>
           <dt>ID da mensagem no outro formato</dt><dd><code>body.data.key.id</code></dd>
           <dt>Timestamp no outro formato</dt><dd><code>body.data.messageTimestamp</code> está em segundos Unix; converta para ISO com <code>new Date(timestamp * 1000).toISOString()</code>.</dd>
+          <dt>Metadados opcionais</dt><dd>Título: <code>body.Payload.Content.LastMessage.Ad.Title</code>; URL: <code>body.Payload.Content.LastMessage.Ad.SourceUrl</code>; thumb: <code>body.Payload.Content.LastMessage.Ad.ThumbnailUrl</code>. UTMs somente se realmente vierem no webhook/URL; a plataforma não as deduz do CTWA.</dd>
         </dl>
         <p>São formatos diferentes de webhook. Confirme o caminho na saída real do seu nó antes de mapear; não misture caminhos dos dois exemplos. O primeiro export não tem amostra do ID do chat/mensagem. Trate ausência de anúncio/CTWA como contato orgânico: omita esses campos, não envie string vazia.</p>
       </details>
@@ -60,7 +62,7 @@ export function MetaEventsGuide({ unit, url, timestamp }: { unit: MetaUnit; url:
           <dt>202</dt><dd>Registrado na plataforma. Não significa aceito nem atribuído pela Meta.</dd>
           <dt>200</dt><dd>Mesmo evento já registrado; nenhuma nova linha é criada.</dd>
           <dt>400 / 403 / 409</dt><dd>Corrija campos/horário; confira token da unidade; verifique ID reutilizado com dados diferentes ou telefone divergente no chat.</dd>
-          <dt>401 / 413</dt><dd>Confira Bearer token / reduza o corpo para até 4 KB.</dd>
+          <dt>401 / 413</dt><dd>Confira Bearer token / reduza o corpo para até 16 KB.</dd>
           <dt>429 / rede / 5xx</dt><dd>Repita com atraso e limite de tentativas. Em 429 respeite Retry-After. Preserve o mesmo corpo, source_event_id e occurred_at. Limite da API: 120 requisições/minuto/unidade.</dd>
         </dl>
         <p>Sem CTWA: marco interno, sem atribuição a anúncio. Sem destino válido: revisar source_id, acesso do token ao anúncio, WABA e versão Graph. Dataset manual é opcional; vazio permite descoberta. Testar leitura verifica WABA/dataset/número; leitura do anúncio é testada durante a descoberta.</p>

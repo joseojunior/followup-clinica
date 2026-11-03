@@ -14,7 +14,7 @@
       "genericAuthType": "httpHeaderAuth",
       "sendBody": true,
       "specifyBody": "json",
-      "jsonBody": "={{ Object.fromEntries(Object.entries({unit: $json.unit, chat_id: $json.chat_id, phone: $json.phone, event_type: $json.event_type, occurred_at: $json.occurred_at, source_event_id: $json.source_event_id, ctwa_clid: $json.ctwa_clid, source_id: $json.source_id}).filter(([key, value]) => value !== undefined && value !== null && value !== '')) }}",
+      "jsonBody": "={{ Object.fromEntries(Object.entries({unit: $json.unit, chat_id: $json.chat_id, phone: $json.phone, event_type: $json.event_type, occurred_at: $json.occurred_at, source_event_id: $json.source_event_id, ctwa_clid: $json.ctwa_clid, source_id: $json.source_id, attribution: $json.attribution}).filter(([key, value]) => value !== undefined && value !== null && value !== '')) }}",
       "options": {"timeout": 15000}
     }
   }],

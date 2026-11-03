@@ -15,7 +15,7 @@ export function equalDigest(value: string, expected: string) {
 export function validateMetaInput(value: unknown, now = Date.now()) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Corpo JSON inválido.");
   const body = value as Record<string, unknown>;
-  const allowed = new Set(["unit", "chat_id", "phone", "source_id", "event_type", "occurred_at", "source_event_id", "ctwa_clid"]);
+  const allowed = new Set(["unit", "chat_id", "phone", "source_id", "event_type", "occurred_at", "source_event_id", "ctwa_clid", "attribution"]);
   if (Object.keys(body).some((key) => !allowed.has(key))) throw new Error("O corpo contém campos não permitidos.");
   if (!isMetaUnit(body.unit) || !isMetaStage(body.event_type)) throw new Error("Unidade ou etapa inválida.");
   for (const field of ["chat_id", "source_event_id"] as const) {
@@ -27,12 +27,44 @@ export function validateMetaInput(value: unknown, now = Date.now()) {
   if (body.ctwa_clid !== undefined && (body.event_type !== "conversation_started" || typeof body.ctwa_clid !== "string" || !/^[!-~]{12,1000}$/.test(body.ctwa_clid))) throw new Error("ctwa_clid inválido ou enviado fora da primeira conversa.");
   const phone = body.phone === undefined ? null : normalizeMetaPhone(body.phone);
   if (body.source_id !== undefined && (typeof body.source_id !== "string" || !/^\d{5,30}$/.test(body.source_id) || body.event_type !== "conversation_started")) throw new Error("source_id deve ser o ID do anúncio na primeira mensagem.");
+  const attribution = validateMetaAttribution(body.attribution);
+  if (Object.keys(attribution).length && body.event_type !== "conversation_started") throw new Error("attribution só pode ser enviado no primeiro contato (conversation_started).");
   return {
     unit: body.unit, eventType: body.event_type, chatId: (body.chat_id as string).trim(),
     occurredAt: new Date(timestamp), sourceEventId: (body.source_event_id as string).trim(),
     ctwaClid: (body.ctwa_clid as string | undefined) || null,
-    phone, sourceId: (body.source_id as string | undefined) || null,
+    phone, sourceId: (body.source_id as string | undefined) || null, attribution,
   };
+}
+
+const attributionFields = {
+  utm_source: 256, utm_medium: 256, utm_campaign: 256, utm_content: 256, utm_term: 256,
+  ad_title: 512, source_url: 2048, thumbnail_url: 2048,
+} as const;
+export type MetaAttribution = Partial<Record<keyof typeof attributionFields, string>>;
+
+/** Canonical order makes idempotency independent of JSON property order. No URL is fetched. */
+export function validateMetaAttribution(value: unknown): MetaAttribution {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("attribution deve ser um objeto.");
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).some((key) => !Object.hasOwn(attributionFields, key))) throw new Error("attribution contém campos não permitidos.");
+  const result: MetaAttribution = {};
+  for (const field of Object.keys(attributionFields) as Array<keyof typeof attributionFields>) {
+    const raw = body[field];
+    if (raw === undefined || raw === null || raw === "") continue;
+    if (typeof raw !== "string") throw new Error(`attribution.${field} deve ser texto.`);
+    const text = raw.trim();
+    if (!text) continue;
+    if (text.length > attributionFields[field] || /[\u0000-\u001f\u007f]/.test(text)) throw new Error(`attribution.${field} excede o limite ou contém caracteres inválidos.`);
+    if (field.endsWith("_url")) {
+      let url: URL;
+      try { url = new URL(text); } catch { throw new Error(`attribution.${field} deve ser uma URL HTTPS válida.`); }
+      if (url.protocol !== "https:" || !url.hostname || url.username || url.password) throw new Error(`attribution.${field} deve ser HTTPS e não pode conter credenciais.`);
+    }
+    result[field] = text;
+  }
+  return result;
 }
 
 export function normalizeMetaPhone(value: unknown) {
