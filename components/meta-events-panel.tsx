@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { MetaStage, MetaUnit } from "@/lib/meta-core";
+import { MetaEventsGuide } from "@/components/meta-events-guide";
 
 type Policy = { eventType: MetaStage; approved: boolean; exportEnabled: boolean; approvedBy: string | null; approvedAt: string | null };
 type Unit = { unit: MetaUnit; enabled: boolean; verifiedAt: string | null; datasetId: string | null; wabaId: string | null; tokenConfigured: boolean; inboundTokenConfigured: boolean; policies: Policy[] };
@@ -81,7 +82,6 @@ export function MetaEventsPanel() {
 
   const current = data?.units.find((item) => item.unit === settingsUnit);
   const ingestUrl = data?.ingestUrl || `${browserOrigin}/api/integrations/n8n/meta-events`;
-  const sample = JSON.stringify({ unit: settingsUnit, chat_id: "REMOTE_JID_DO_CHAT", phone: "+5511999999999", event_type: "conversation_started", occurred_at: sampleTime, source_event_id: "ID_ESTAVEL_DA_PRIMEIRA_MENSAGEM", ctwa_clid: "CTWA_CLID_DO_REFERRAL", source_id: "123456789012345" }, null, 2);
   const maxFunnel = Math.max(1, ...Object.values(data?.funnel || {}).map(Number));
   return <div className="meta-screen">
     <section className="meta-heading"><div><h2>Eventos Meta</h2><p>Do acontecimento no n8n ao recebimento pela Meta, com trilha separada para cada número. A plataforma registra etapas mesmo quando não há clique CTWA.</p></div><span className={`meta-mode ${data?.mode === "live" ? "live" : ""}`}>{data?.mode === "live" ? "Exportação live" : "Somente registro interno"}</span></section>
@@ -98,11 +98,7 @@ export function MetaEventsPanel() {
       <div className="meta-policies"><h4>Revisão de eventos</h4><p>Dados de saúde exigem avaliação dos Termos da Meta e privacidade antes de cada liberação. Nome genérico ou hashing não torna o envio automaticamente permitido.</p><label className="meta-toggle"><input type="checkbox" checked={privacyChecked} onChange={(event) => setPrivacyChecked(event.target.checked)} />Confirmo que revisei a finalidade, os dados e os <a href="https://www.facebook.com/legal/technology_terms" target="_blank" rel="noreferrer">Termos das Ferramentas de Negócios</a>.</label>{current?.policies.map((policy) => <div className="meta-policy" key={policy.eventType}><div><strong>{stageNames[policy.eventType]}</strong><small>{policy.approved ? `Aprovado · ${policy.approvedAt ? dateTime.format(new Date(policy.approvedAt)) : "data indisponível"}` : "Não aprovado"}{policy.eventType === "payment_confirmed" || policy.eventType === "appointment_confirmed" ? " · apenas interno" : ""}</small></div>{policy.eventType === "conversation_started" || policy.eventType === "lead_qualified" ? <div>{!policy.approved && <button className="secondary-button" disabled={busy || !privacyChecked} onClick={() => void admin("policy", { eventType: policy.eventType, policyAction: "approve", privacyReviewConfirmed: true })}>Aprovar</button>}<button className="secondary-button" disabled={busy || (!policy.approved && !policy.exportEnabled)} onClick={() => void admin("policy", { eventType: policy.eventType, policyAction: policy.exportEnabled ? "disable" : "enable" })}>{policy.exportEnabled ? "Desabilitar" : "Habilitar"}</button></div> : <span>Interno</span>}</div>)}</div></div>
     </section>
     <section className="meta-guide"><div className="meta-section-head"><div><h3>Guia do n8n · {unitName(settingsUnit)}</h3><p>Crie uma credencial Bearer exclusiva para esta unidade e use-a no nó HTTP Request.</p></div><button className="secondary-button" disabled={busy} onClick={() => void admin("rotate_token")}>{current?.inboundTokenConfigured ? "Rotacionar token" : "Criar token"}</button></div>{oneTimeToken && <div className="meta-one-time"><strong>Copie agora — não aparecerá novamente</strong><code>{oneTimeToken}</code><button className="secondary-button" onClick={() => void navigator.clipboard.writeText(oneTimeToken)}>Copiar token</button></div>}
-      <div className="meta-guide-steps">
-        <div><strong>1. Configurar o nó</strong><p>POST, Bearer da unidade, corpo JSON e timeout 15 s. O login do painel não é necessário na chamada n8n.</p><code className="meta-url">{ingestUrl}</code><button className="secondary-button" onClick={() => void navigator.clipboard.writeText(ingestUrl)}>Copiar URL</button></div>
-        <div><strong>2. Posicionar no workflow</strong><p>Após salvar a mensagem recebida/referral, envie chat_id, phone, ctwa_clid e source_id do anúncio. A plataforma busca dataset/página; não envie esses IDs no corpo. Nos demais marcos remova ctwa_clid/source_id. Agendamento usa id_agendamento; pagamento sem transação é somente interno.</p></div>
-        <div><strong>3. Resposta e repetição</strong><p>202 = registrado, não entregue à Meta; 200 = duplicata. Corrija 400/403/409; repita rede/429/5xx com o mesmo corpo e horário. Não envie nome, e-mail, tratamento ou conversa. Preserve os nós Postgres legados e só desligue o HTTP direto Meta no corte aprovado.</p></div>
-      </div><div className="meta-sample"><div><strong>Exemplo de corpo</strong><button className="secondary-button" onClick={() => void navigator.clipboard.writeText(sample)}>Copiar JSON</button></div><pre>{sample}</pre><small>Dataset manual no painel é opcional (vazio: descoberta por anúncio). O token Meta precisa ler tracking_specs e acessar a WABA. O modo somente registro impede POST de eventos à Meta.</small></div>
+      <MetaEventsGuide unit={settingsUnit} url={ingestUrl} timestamp={sampleTime} />
     </section>
   </div>;
 }
