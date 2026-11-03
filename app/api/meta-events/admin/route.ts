@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   const actor = await requireMetaAdmin();
-  if (!actor) return NextResponse.json({ error: "Acesso administrativo indisponível. Configure META_ADMIN_EMAILS no servidor." }, { status: 403 });
+  if (!actor) return NextResponse.json({ error: "Entre no painel para executar esta ação." }, { status: 401 });
   try {
     const body = await request.json() as Record<string, unknown>;
     if (!isMetaUnit(body.unit) || typeof body.action !== "string") throw new MetaInputError("Unidade ou ação inválida.");

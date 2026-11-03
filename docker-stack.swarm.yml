@@ -24,7 +24,6 @@ x-followup-environment: &followup-environment
   HOSTINGER_VPS_IP: ${HOSTINGER_VPS_IP:-69.62.94.79}
   META_EXPORT_MODE: ${META_EXPORT_MODE:-record_only}
   META_GRAPH_API_VERSION: ${META_GRAPH_API_VERSION:-}
-  META_ADMIN_EMAILS: ${META_ADMIN_EMAILS:-}
   META_INGEST_PUBLIC_URL: ${META_INGEST_PUBLIC_URL:-https://followapi.leticiaatd.online/api/integrations/n8n/meta-events}
 
 services:

@@ -16,7 +16,6 @@ x-followup-environment: &followup-environment
   AI_SETTINGS_ENCRYPTION_KEY: ${AI_SETTINGS_ENCRYPTION_KEY:-}
   META_EXPORT_MODE: ${META_EXPORT_MODE:-record_only}
   META_GRAPH_API_VERSION: ${META_GRAPH_API_VERSION:-}
-  META_ADMIN_EMAILS: ${META_ADMIN_EMAILS:-}
   META_INGEST_PUBLIC_URL: ${META_INGEST_PUBLIC_URL:-https://followapi.leticiaatd.online/api/integrations/n8n/meta-events}
   OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
   N8N_API_BASE_URL: ${N8N_API_BASE_URL:-https://editor.leticiaatd.online/api/v1}

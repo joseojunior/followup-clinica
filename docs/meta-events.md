@@ -4,7 +4,7 @@
 
 A integração começa em `META_EXPORT_MODE=record_only`. Nenhum evento é enviado à Meta nesse modo, mesmo que uma unidade/tipo esteja marcado como habilitado. A migração `017_meta_events.sql` cria configurações por unidade, histórico de CTWA, eventos, tentativas, limite de entrada e auditoria. Eventos anteriores à migração permanecem internos; não há backfill.
 
-Para permitir configuração no painel, defina `META_ADMIN_EMAILS` com os e-mails dos administradores autenticados pelo Supabase, separados por vírgula. Defina também `AI_SETTINGS_ENCRYPTION_KEY` (32 bytes em base64), `META_GRAPH_API_VERSION` vigente e `META_INGEST_PUBLIC_URL` HTTPS. Sem allowlist, alterações administrativas são negadas. O token Meta é criptografado no banco; o token de entrada n8n é gerado pelo painel, armazenado como hash e mostrado uma única vez.
+As alterações administrativas exigem uma sessão autenticada pelo Supabase. Como o painel é usado por uma única conta, não há allowlist adicional de e-mails. Defina `AI_SETTINGS_ENCRYPTION_KEY` (32 bytes em base64), `META_GRAPH_API_VERSION` vigente e `META_INGEST_PUBLIC_URL` HTTPS. O token Meta é criptografado no banco; o token de entrada n8n é gerado pelo painel, armazenado como hash e mostrado uma única vez.
 
 ## Nó HTTP Request no n8n
 
