@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { getFollowupPool, withTransaction } from "@/lib/followup-db";
 import { decryptMetaSecret, encryptMetaSecret, metaEncryptionReady } from "@/lib/meta-secret";
 import { classifyMetaDelivery, classifyMetaEvent, digest, duplicateMatches, equalDigest, extractAdDestination, protectedPhoneHash, metaEventName, type MetaStage, type MetaUnit, validateMetaInput } from "@/lib/meta-core";
-import { validateMetaAssets, type MetaAssetValidation } from "@/lib/meta-asset-validation";
+import { normalizeMetaAssetValidation, validateMetaAssets, type MetaAssetValidation } from "@/lib/meta-asset-validation";
 
 type UnitRow = {
   unit: MetaUnit; inbound_token_hash: string | null; encrypted_access_token: string | null;
@@ -151,7 +151,7 @@ export async function getMetaOverview(unit: MetaUnit | "all", days: number, sear
     funnel: Object.fromEntries(funnel.rows.map((row) => [row.event_type, Number(row.count)])),
     events: events.rows,
     units: settings.rows.map((row) => ({ unit: row.unit, enabled: row.enabled, verifiedAt: row.verified_at, datasetId: row.dataset_id, wabaId: row.waba_id,
-      assetValidation: row.asset_validation,
+      assetValidation: normalizeMetaAssetValidation(row.asset_validation),
       tokenConfigured: Boolean(row.encrypted_access_token), inboundTokenConfigured: Boolean(row.inbound_token_hash), updatedAt: row.updated_at,
       policies: policies.rows.filter((policy) => policy.unit === row.unit).map((policy) => ({ eventType: policy.event_type, approved: policy.approved, exportEnabled: policy.export_enabled, approvedBy: policy.approved_by, approvedAt: policy.approved_at })) })),
   };

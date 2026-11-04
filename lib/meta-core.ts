@@ -78,22 +78,29 @@ export function protectedPhoneHash(unit: MetaUnit, phone: string, key: Buffer) {
   return createHmac("sha256", key).update(`meta-phone-v1:${unit}:${phone}`).digest("hex");
 }
 
-/** Only documented tracking_specs entries; never recursively choose an arbitrary ID. */
-export function extractAdDestination(value: unknown) {
+/** Summarize explicit tracking_specs IDs; retain counts so duplicate IDs are observable. */
+export function inspectAdDestinations(value: unknown) {
   const specs = (value as { tracking_specs?: unknown } | null)?.tracking_specs;
   if (!Array.isArray(specs)) throw new Error("tracking_specs ausente");
-  const datasets = new Set<string>(); const pages = new Set<string>();
+  const datasets: string[] = []; const pages: string[] = [];
   for (const spec of specs) {
     if (!spec || typeof spec !== "object") continue;
     for (const [field, target] of [["dataset", datasets], ["page", pages]] as const) {
       const ids = (spec as Record<string, unknown>)[field];
       if (ids === undefined) continue;
       if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !/^\d{5,30}$/.test(id))) throw new Error("IDs inválidos em tracking_specs");
-      ids.forEach((id) => target.add(id));
+      ids.forEach((id) => target.push(id));
     }
   }
-  if (datasets.size !== 1 || pages.size !== 1) throw new Error("Dataset/página ausente ou ambíguo");
-  return { datasetId: [...datasets][0], pageId: [...pages][0] };
+  const summarize = (ids: string[]) => ({ itemCount: ids.length, ids: [...new Set(ids)], duplicateCount: ids.length - new Set(ids).size });
+  return { dataset: summarize(datasets), page: summarize(pages) };
+}
+
+/** Only documented tracking_specs entries; identical IDs are intentionally deduplicated. */
+export function extractAdDestination(value: unknown) {
+  const destinations = inspectAdDestinations(value);
+  if (destinations.dataset.ids.length !== 1 || destinations.page.ids.length !== 1) throw new Error("Dataset/página ausente ou ambíguo");
+  return { datasetId: destinations.dataset.ids[0], pageId: destinations.page.ids[0] };
 }
 
 export function metaEventName(stage: MetaStage): "LeadSubmitted" | "QualifiedLead" | null {
