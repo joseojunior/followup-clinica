@@ -3,7 +3,7 @@ import { getFollowupPool, withTransaction } from "@/lib/followup-db";
 import { MetaInputError } from "@/lib/meta-events";
 import { digest, type MetaUnit, type MetaStage } from "@/lib/meta-core";
 import { decryptMetaSecret, encryptMetaSecret } from "@/lib/meta-secret";
-import { consultingDestination, consultingTestPayload, validateConsultingEvent } from "@/lib/consulting-meta-core";
+import { consultingDestination, consultingEventName, consultingProductionEligible, consultingTestPayload, validateConsultingEvent } from "@/lib/consulting-meta-core";
 
 export async function recordConsultingEvent(body: unknown, unit: MetaUnit) {
   let input: ReturnType<typeof validateConsultingEvent>;
@@ -12,43 +12,50 @@ export async function recordConsultingEvent(body: unknown, unit: MetaUnit) {
   const hash = digest(JSON.stringify(input));
   return withTransaction(async c => {
     await c.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [input.chatHash]);
-    const old = (await c.query("SELECT id,input_hash,test_state FROM followup.consulting_meta_events WHERE unit=$1 AND event_type=$2 AND source_event_id=$3", [unit,input.stage,input.sourceEventId])).rows[0];
+    const old = (await c.query("SELECT id,input_hash,test_state,production_state FROM followup.consulting_meta_events WHERE unit=$1 AND event_type=$2 AND source_event_id=$3", [unit,input.stage,input.sourceEventId])).rows[0];
     if (old) {
       if (old.input_hash !== hash) throw new MetaInputError("ID já utilizado com dados diferentes.",409);
-      return {id:old.id,duplicate:true,state:old.test_state};
+      return {id:old.id,duplicate:true,state:old.test_state,productionState:old.production_state};
     }
-    const settings = (await c.query("SELECT capture_started_at FROM followup.consulting_meta_settings WHERE unit=$1", [unit])).rows[0];
+    const settings = (await c.query("SELECT * FROM followup.consulting_meta_settings WHERE unit=$1 FOR SHARE", [unit])).rows[0];
     if (!settings || input.occurredAt < settings.capture_started_at) throw new MetaInputError("Somente novos acontecimentos de consultoria após a ativação desta área; histórico antigo não é importado.",409);
     // Deliberately never query legacy meta_events/meta_clicks or source lead databases.
-    const conversation = input.stage === "conversation_started" ? null : (await c.query("SELECT id FROM followup.consulting_meta_events WHERE unit=$1 AND chat_hash=$2 AND event_type='conversation_started' AND occurred_at <= $3 ORDER BY occurred_at DESC LIMIT 1", [unit,input.chatHash,input.occurredAt])).rows[0];
+    const conversation = input.stage === "conversation_started" ? null : (await c.query("SELECT id,is_synthetic,created_at,occurred_at,encrypted_ctwa FROM followup.consulting_meta_events WHERE unit=$1 AND chat_hash=$2 AND event_type='conversation_started' AND occurred_at <= $3 ORDER BY occurred_at DESC LIMIT 1", [unit,input.chatHash,input.occurredAt])).rows[0];
     if (input.stage !== "conversation_started" && !conversation) throw new MetaInputError("Registre primeiro a nova conversa de consultoria. Nenhum registro antigo será utilizado.",409);
+    const policy=(await c.query("SELECT enabled_at FROM followup.consulting_meta_policy WHERE unit=$1 AND event_type=$2 AND enabled",[unit,input.stage])).rows[0];
+    const synthetic=Boolean(input.isSynthetic||conversation?.is_synthetic);
+    const eligible=consultingProductionEligible({enabled:settings.production_enabled,enabledAt:settings.production_enabled_at,policyAt:policy?.enabled_at||null,occurredAt:input.occurredAt,synthetic,conversationAt:conversation?.occurred_at||input.occurredAt,conversationCreatedAt:conversation?.created_at||new Date(),environmentEnabled:process.env.CONSULTING_META_PRODUCTION==="enabled"});
+    const productionState=!consultingEventName(input.stage)?"internal":!eligible?"excluded":!(input.ctwa||conversation?.encrypted_ctwa)?"no_ctwa":"queued";
     try {
-      const row = await c.query(`INSERT INTO followup.consulting_meta_events(unit,event_type,source_event_id,input_hash,chat_hash,occurred_at,conversation_id,encrypted_ctwa,source_id,ph_hash,fn_hash,ln_hash,transaction_hash,value)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id,test_state`,
-      [unit,input.stage,input.sourceEventId,hash,input.chatHash,input.occurredAt,conversation?.id || null,input.ctwa ? encryptMetaSecret(input.ctwa) : null,input.sourceId,input.ph,input.fn,input.ln,input.transactionHash,input.value]);
-      return {id:row.rows[0].id,duplicate:false,state:row.rows[0].test_state};
+      const row = await c.query(`INSERT INTO followup.consulting_meta_events(unit,event_type,source_event_id,input_hash,chat_hash,occurred_at,conversation_id,encrypted_ctwa,source_id,ph_hash,fn_hash,ln_hash,transaction_hash,value,attribution,is_synthetic,production_eligible,production_activation_at,production_state,production_next_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,CASE WHEN $19='queued' THEN now() ELSE NULL END) RETURNING id,test_state,production_state`,
+      [unit,input.stage,input.sourceEventId,hash,input.chatHash,input.occurredAt,conversation?.id || null,input.ctwa ? encryptMetaSecret(input.ctwa) : null,input.sourceId,input.ph,input.fn,input.ln,input.transactionHash,input.value,JSON.stringify(input.attribution ?? {}),synthetic,eligible,eligible?settings.production_enabled_at:null,productionState]);
+      return {id:row.rows[0].id,duplicate:false,state:row.rows[0].test_state,productionState:row.rows[0].production_state};
     } catch(e) { if ((e as {code?:string}).code === "23505") throw new MetaInputError("Evento ou transação já registrado; não gere outra compra para o mesmo sinal.",409); throw e; }
   });
 }
 
 export async function consultingOverview(unit: MetaUnit) {
   const db = getFollowupPool();
-  const settings = (await db.query("SELECT page_id,dataset_id,test_code,capture_started_at FROM followup.consulting_meta_settings WHERE unit=$1",[unit])).rows[0];
-  const events = (await db.query(`SELECT id,event_type,occurred_at,value,test_state,test_result,substr(chat_hash,1,8) AS reference
+  const settings = (await db.query("SELECT page_id,dataset_id,test_code,capture_started_at,production_enabled,production_enabled_at FROM followup.consulting_meta_settings WHERE unit=$1",[unit])).rows[0];
+  const policies=(await db.query("SELECT event_type,enabled,enabled_at FROM followup.consulting_meta_policy WHERE unit=$1 ORDER BY event_type",[unit])).rows;
+  const events = (await db.query(`SELECT id,event_type,occurred_at,value,test_state,test_result,attribution,is_synthetic,production_eligible,production_state,production_result,substr(chat_hash,1,8) AS reference
     FROM followup.consulting_meta_events WHERE unit=$1 ORDER BY created_at DESC LIMIT 100`,[unit])).rows;
-  return {mode:"test_only",settings,events};
+  return {mode:settings?.production_enabled?"live":"test_only",productionAvailable:process.env.CONSULTING_META_PRODUCTION==="enabled",settings,policies,events};
 }
 
 export async function saveConsultingSettings(unit: MetaUnit, input: Record<string, unknown>, actor: string) {
   const id = (key:string) => { const value=input[key]; if (typeof value !== "string" || (value.trim() && !/^\d{5,30}$/.test(value.trim()))) throw new MetaInputError(`${key} inválido.`); return value.trim() || null; };
   if (typeof input.testCode !== "string" || !/^TEST[A-Za-z0-9_-]{1,50}$/.test(input.testCode.trim())) throw new MetaInputError("Código de teste obrigatório (TEST...).");
   await withTransaction(async c => {
+    const stored=(await c.query("SELECT page_id,dataset_id,production_enabled FROM followup.consulting_meta_settings WHERE unit=$1 FOR UPDATE",[unit])).rows[0];
+    if(stored?.production_enabled&&(stored.page_id!==id("pageId")||stored.dataset_id!==id("datasetId")))throw new MetaInputError("Pause a produção da unidade antes de trocar Página/dataset.",409);
     await c.query("UPDATE followup.consulting_meta_settings SET page_id=$2,dataset_id=$3,test_code=$4 WHERE unit=$1",[unit,id("pageId"),id("datasetId"),(input.testCode as string).trim()]);
     await c.query("INSERT INTO followup.meta_admin_audit(unit,action,actor) VALUES($1,'consulting_test_settings',$2)",[unit,actor]);
   });
 }
 
-/** Explicit one-shot test only. No worker, retry scheduler or production switch. */
+/** Explicit one-shot test, separate from the production queue. */
 export async function sendConsultingTest(unit: MetaUnit, id: unknown, actor: string, confirmed: boolean) {
   if (!confirmed) throw new MetaInputError("Confirme a transferência de novos dados de consultoria não relacionados à saúde.");
   if (process.env.META_EXPORT_MODE === "live") throw new MetaInputError("Mantenha META_EXPORT_MODE=record_only durante a homologação.",409);
@@ -63,6 +70,7 @@ export async function sendConsultingTest(unit: MetaUnit, id: unknown, actor: str
     FROM followup.consulting_meta_events e JOIN followup.consulting_meta_events i ON i.id=COALESCE(e.conversation_id,e.id) AND i.unit=e.unit
     WHERE e.id=$1 AND e.unit=$2`,[id,unit])).rows[0];
   if (!event || event.occurred_at < setting.capture_started_at) throw new MetaInputError("Evento novo de consultoria não encontrado.",404);
+  if (event.production_eligible) throw new MetaInputError("Registro destinado à produção; não executar teste sobre ele.",409);
   if (event.test_state !== "new") throw new MetaInputError("Este teste já foi executado ou iniciado. Confira o resultado; não há reenvio automático.",409);
   if (+event.occurred_at < Date.now()-7*86400_000) throw new MetaInputError("Evento fora da janela de sete dias.",409);
   const token = decryptMetaSecret(setting.encrypted_access_token);

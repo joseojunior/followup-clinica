@@ -12,7 +12,7 @@ export async function POST(request:Request) {
     if (!unit) return json({error:"Token inválido."},401);
     if (!await consumeIngestQuota(unit)) return NextResponse.json({error:"Limite por unidade excedido."},{status:429,headers:{"Retry-After":"60"}});
     const result=await recordConsultingEvent(JSON.parse(await readMetaEventBody(request)),unit);
-    return json({...result,mode:"test_only",message:"Registrado; não enviado à Meta. O teste exige ação explícita no painel."},result.duplicate?200:202);
+    return json({...result,message:"Registrado; consulte productionState. 202 não confirma entrega à Meta."},result.duplicate?200:202);
   } catch(e) {
     if (e instanceof MetaInputError) return json({error:e.message},e.status);
     if (e instanceof RangeError) return json({error:"Corpo excede 16 KB."},413);

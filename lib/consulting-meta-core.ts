@@ -1,4 +1,4 @@
-import { digest, isMetaStage, isMetaUnit, normalizeMetaPhone, inspectAdDestinations, type MetaStage } from "./meta-core.ts";
+import { digest, isMetaStage, isMetaUnit, normalizeMetaPhone, inspectAdDestinations, validateMetaAttribution, type MetaStage } from "./meta-core.ts";
 
 export const CONSULTING_CONTEXT = "consulting_v1";
 export const consultingEventName = (stage: MetaStage) => ({ conversation_started: "LeadSubmitted", lead_qualified: "QualifiedLead", payment_requested: "InitiateCheckout", payment_pending: null, payment_confirmed: null, appointment_confirmed: "Purchase" } as const)[stage];
@@ -6,7 +6,7 @@ export const consultingEventName = (stage: MetaStage) => ({ conversation_started
 export function validateConsultingEvent(value: unknown, now = Date.now()) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("JSON inválido.");
   const b = value as Record<string, unknown>;
-  const allowed = ["context", "unit", "chat_id", "event_type", "source_event_id", "occurred_at", "ctwa_clid", "source_id", "phone", "name", "deposit_paid", "transaction_id", "value"];
+  const allowed = ["context", "unit", "chat_id", "event_type", "source_event_id", "occurred_at", "ctwa_clid", "source_id", "phone", "name", "deposit_paid", "transaction_id", "value", "attribution", "is_synthetic"];
   if (Object.keys(b).some(k => !allowed.includes(k))) throw new Error("Campo não permitido; não envie dados de saúde ou histórico antigo.");
   if (b.context !== CONSULTING_CONTEXT || !isMetaUnit(b.unit) || !isMetaStage(b.event_type)) throw new Error("Informe context=consulting_v1, unidade e etapa válidas.");
   const text = (key: string, max = 180) => {
@@ -19,6 +19,10 @@ export function validateConsultingEvent(value: unknown, now = Date.now()) {
   const occurredAt = new Date(occurred);
   if (!Number.isFinite(+occurredAt) || +occurredAt > now + 300_000 || +occurredAt < now - 7 * 86400_000) throw new Error("Horário fora da janela de sete dias.");
   const first = b.event_type === "conversation_started";
+  if (b.is_synthetic !== undefined && typeof b.is_synthetic !== "boolean") throw new Error("is_synthetic deve ser booleano.");
+  const synthetic = b.is_synthetic === true || /^(synthetic|teste?)(?:[-_:]|$)/i.test(text("source_event_id")) || /^(consultoria-teste|CHAT_NOVO_DE_CONSULTORIA)/i.test(text("chat_id")) || b.phone === "+12025550123";
+  const attribution = validateMetaAttribution(b.attribution);
+  if (!first && Object.keys(attribution).length) throw new Error("attribution somente no primeiro contato de consultoria (conversation_started).");
   if (!first && ["ctwa_clid", "source_id", "phone", "name"].some(k => b[k] !== undefined)) throw new Error("CTWA, anúncio e identidade somente na nova conversa de consultoria.");
   const ctwa = b.ctwa_clid === undefined ? null : text("ctwa_clid", 1000);
   if (ctwa && !/^[!-~]{12,1000}$/.test(ctwa)) throw new Error("CTWA inválido.");
@@ -38,7 +42,9 @@ export function validateConsultingEvent(value: unknown, now = Date.now()) {
   return { unit: b.unit, stage: b.event_type, chatHash: digest(`${CONSULTING_CONTEXT}:${b.unit}:${text("chat_id")}`),
     sourceEventId: text("source_event_id"), occurredAt, ctwa, sourceId, ph,
     fn: names.length ? digest(names[0]) : null, ln: names.length > 1 ? digest(names.slice(1).join(" ")) : null,
-    transactionHash, value: purchase ? amount : null };
+    transactionHash, value: purchase ? amount : null,
+    // Preserve historical input_hash for omitted, empty or null metadata.
+    ...(Object.keys(attribution).length ? { attribution } : {}), ...(synthetic ? { isSynthetic: true } : {}) };
 }
 
 /** Fallback only for missing IDs, never to hide two distinct automatic destinations. */
@@ -60,4 +66,21 @@ export function consultingTestPayload(event: { id: string; stage: MetaStage; occ
     action_source: "business_messaging", messaging_channel: "whatsapp", user_data: { page_id: pageId, ctwa_clid: identity.ctwa,
       ...(identity.ph ? { ph: [identity.ph] } : {}), ...(identity.fn ? { fn: [identity.fn] } : {}), ...(identity.ln ? { ln: [identity.ln] } : {}) },
     ...(eventName === "Purchase" ? { custom_data: { currency: "BRL", value: event.value, content_name: "Sinal de agendamento de consultoria" } } : {}) }] };
+}
+
+export function consultingLivePayload(event: Parameters<typeof consultingTestPayload>[0], identity: Parameters<typeof consultingTestPayload>[1], pageId: string) {
+  const { test_event_code, ...payload } = consultingTestPayload(event, identity, pageId, "TEST_PAYLOAD_BUILDER");
+  return { data: payload.data.map(item => ({ ...item, event_id: `consulting-live:${event.id}` })) };
+}
+
+export function consultingProductionEligible(input: { enabled: boolean; enabledAt: Date | null; policyAt: Date | null; occurredAt: Date; synthetic: boolean; conversationAt: Date; conversationCreatedAt: Date; environmentEnabled: boolean }) {
+  return Boolean(input.environmentEnabled && input.enabled && input.enabledAt && input.policyAt && !input.synthetic &&
+    input.occurredAt >= input.enabledAt && input.occurredAt >= input.policyAt && input.conversationAt >= input.enabledAt && input.conversationCreatedAt >= input.enabledAt);
+}
+
+export function consultingProductionOutcome(status: number | null, received: number, hasError: boolean, attempts: number) {
+  if (status !== null && status >= 200 && status < 300 && received > 0 && !hasError) return "accepted";
+  if (status === 429 && received === 0 && hasError && attempts < 3) return "queued";
+  if (status !== null && status >= 400 && status < 500 && received === 0 && hasError) return "failed";
+  return "unknown";
 }
