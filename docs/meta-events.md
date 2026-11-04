@@ -6,7 +6,7 @@ O banco followup é o registro oficial, sem Google Sheets. A API não exige que 
 
 Em Eventos Meta, gere um token diferente por unidade (mostrado uma vez, armazenado como hash). No n8n use HTTPS e Authorization: Bearer TOKEN_DA_UNIDADE. O token identifica a unidade; divergência no corpo retorna 403. Login Supabase é necessário apenas para configurar o painel.
 
-Token Meta é outra credencial: pode ser cadastrado no painel, criptografado, sem preencher WABA ou dataset. Esses dois campos foram removidos apenas da interface; salvar token não apaga IDs já existentes nem remove as validações do backend. Receber e armazenar eventos não depende desses IDs.
+Token Meta é outra credencial: pode ser cadastrado no painel, criptografado, sem preencher WABA ou dataset. O diagnóstico de acesso a anúncio/Página/dataset também não depende de WABA. Salvar token não apaga IDs já existentes nem remove as validações do exportador. Receber e armazenar eventos não depende desses IDs.
 
 A exportação sem WABA ainda requer revisão técnica e de privacidade; não está habilitada por essa mudança de formulário. O servidor continua em META_EXPORT_MODE=record_only. Não reenvie eventos clínicos reais para validação de entrega. Qualquer futuro teste externo deve usar um cenário não sensível aprovado, sem CTWA de paciente.
 
@@ -82,7 +82,19 @@ Sem ID de transação não há Purchase/receita. Pagamento é somente um marco p
 
 ## Descoberta, entrega e corte
 
-O worker faz GET /source_id?fields=tracking_specs, exige um único dataset e página nos arrays explícitos, e compara com GET /waba_id/dataset. Não escolhe o primeiro destino arbitrariamente. Ausência, ambiguidade ou permissão insuficiente fica registrada sem envio. Rede/429/5xx têm até cinco tentativas de descoberta. Salvar token/WABA e testar com sucesso permite repetir descobertas em revisão.
+### Diagnóstico de ativos sem WABA (somente leitura)
+
+No painel Eventos Meta, escolha a unidade, salve seu token e clique em **Testar acesso aos ativos**. O ID do anúncio é opcional: vazio usa o último source_id capturado pelo n8n naquela unidade. Se preenchido, ele também precisa existir no histórico de cliques dessa unidade. Não existe consulta arbitrária de anúncios de outra unidade.
+
+O servidor exige META_EXPORT_MODE=record_only e META_GRAPH_API_VERSION no formato vNN.N, com uma versão suportada pela Meta. O teste consulta apenas GET /me?fields=id, GET /source_id?fields=id,tracking_specs e GET /page_id?fields=id e GET /dataset_id?fields=id. Não exige WABA, não transmite CTWA/telefone/eventos e não cria datasets. Exige exatamente uma Página e um dataset nos arrays explícitos de tracking_specs; destinos ausentes ou ambíguos não são escolhidos.
+
+O último relatório fica salvo em followup.meta_unit_settings.asset_validation, separado por unidade, com horário, versão, IDs, cada etapa e motivo de falha (token expirado, recurso sem acesso, destino ausente/ambíguo, rede, limite de consultas etc.). Não são persistidos mensagens brutas da Meta, nomes de ativos ou a identidade retornada pelo /me. Trocar token invalida o relatório; uma rotação durante o teste impede salvar o resultado antigo. A execução é auditada como test_assets_read_only.
+
+“Acesso de leitura confirmado” comprova somente os IDs referenciados pelo anúncio e sua leitura com a credencial. **Não comprova propriedade, vínculo Página/número WhatsApp, suporte à exportação sem WABA, aceitação de eventos nem atribuição.** O teste não altera verified_at/verified_number, aprovações, habilitações, cliques ou a fila de eventos. O exportador existente continua separado e bloqueado pelas validações anteriores; nenhum resultado deste diagnóstico o libera.
+
+### Exportador existente (não habilitado pelo diagnóstico)
+
+O worker legado faz GET /source_id?fields=tracking_specs, exige um único dataset e página nos arrays explícitos, e compara com GET /waba_id/dataset. Não escolhe o primeiro destino arbitrariamente. Ausência, ambiguidade ou permissão insuficiente fica registrada sem envio. Rede/429/5xx têm até cinco tentativas de descoberta. O diagnóstico novo não executa nem libera essa descoberta e não preenche sua verificação de WABA/número.
 
 Descoberta faz somente GET inclusive em record_only. POST de eventos exige live, unidade/tipo aprovados e habilitados antes do acontecimento, identidade não ambígua e destino validado. Conversa/qualificação são candidatos a LeadSubmitted/QualifiedLead; agendamento/pagamento somente internos. Não há backfill dos acontecimentos recebidos em record_only. A Meta recebe CTWA/WABA, nunca ph/fn/ln/em ou texto clínico. Aceitação API não garante atribuição.
 

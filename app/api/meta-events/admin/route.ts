@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     let result: unknown = { ok: true };
     if (body.action === "rotate_token") result = { token: await rotateInboundToken(body.unit, actor) };
     else if (body.action === "save_unit") await saveMetaUnit(body.unit, body, actor);
-    else if (body.action === "test") result = await testMetaConfiguration(body.unit);
+    else if (body.action === "test") result = await testMetaConfiguration(body.unit, actor, body.sourceId);
     else if (body.action === "policy") {
       if (!isMetaStage(body.eventType) || !["approve", "enable", "disable"].includes(String(body.policyAction))) throw new MetaInputError("Etapa ou ação inválida.");
       await setMetaPolicy(body.unit, body.eventType, body.policyAction as "approve" | "enable" | "disable", actor, body.privacyReviewConfirmed === true);

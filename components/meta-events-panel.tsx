@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import type { MetaStage, MetaUnit } from "@/lib/meta-core";
+import type { MetaAssetValidation, AssetCheck } from "@/lib/meta-asset-validation";
 import { MetaEventsGuide } from "@/components/meta-events-guide";
 
 type Policy = { eventType: MetaStage; approved: boolean; exportEnabled: boolean; approvedBy: string | null; approvedAt: string | null };
-type Unit = { unit: MetaUnit; enabled: boolean; verifiedAt: string | null; datasetId: string | null; wabaId: string | null; tokenConfigured: boolean; inboundTokenConfigured: boolean; policies: Policy[] };
+type Unit = { unit: MetaUnit; enabled: boolean; verifiedAt: string | null; datasetId: string | null; wabaId: string | null; tokenConfigured: boolean; inboundTokenConfigured: boolean; policies: Policy[]; assetValidation: MetaAssetValidation | null };
 type Event = { id: string; unit: MetaUnit; event_type: MetaStage; state: string; reason: string | null; occurred_at: string; attempts: number; chat_mask: string; ctwa_origin: string | null; fbtrace_id: string | null; source_id: string | null; dataset_id: string | null; page_id: string | null };
 type Overview = { mode: "record_only" | "live"; encryptionReady: boolean; graphVersionConfigured: boolean; ingestUrl: string | null;
   counts: { received: number; noCtwa: number; awaitingApproval: number; queued: number; accepted: number; failed: number };
@@ -15,6 +16,8 @@ const stageNames: Record<MetaStage, string> = { conversation_started: "Conversa 
 const stateNames: Record<string, string> = { no_ctwa: "Sem CTWA", internal_only: "Somente interno", awaiting_approval: "Aguardando aprovação", queued: "Na fila", sending: "Enviando", accepted: "Aceito pela Meta", failed: "Falhou" };
 const dateTime = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Sao_Paulo" });
 const unitName = (unit: MetaUnit) => unit === "sender_1" ? "Unidade 1" : "Unidade 2";
+const checkNames: Record<AssetCheck["key"], string> = { configuration: "Configuração", token: "Token", ad: "Anúncio", destination: "Destino do anúncio", page: "Página", dataset: "Dataset" };
+const checkStates = { passed: "Confirmado", failed: "Falhou", skipped: "Não consultado" };
 
 export function MetaEventsPanel() {
   const [data, setData] = useState<Overview | null>(null);
@@ -23,6 +26,8 @@ export function MetaEventsPanel() {
   const [search, setSearch] = useState("");
   const [settingsUnit, setSettingsUnit] = useState<MetaUnit>("sender_1");
   const [accessToken, setAccessToken] = useState("");
+  const [sourceId, setSourceId] = useState("");
+  const [testing, setTesting] = useState(false);
   const [oneTimeToken, setOneTimeToken] = useState<string | null>(null);
   const [privacyChecked, setPrivacyChecked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,22 +51,22 @@ export function MetaEventsPanel() {
   useEffect(() => {
     setAccessToken("");
   }, [settingsUnit, data?.units]);
-  useEffect(() => { setOneTimeToken(null); }, [settingsUnit]);
+  useEffect(() => { setOneTimeToken(null); setSourceId(""); }, [settingsUnit]);
 
   async function admin(action: string, extra: Record<string, unknown> = {}) {
-    setBusy(true); setMessage("");
+    setBusy(true); setTesting(action === "test"); setMessage("");
     try {
       const response = await fetch("/api/meta-events/admin", { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ unit: settingsUnit, action, ...extra }) });
-      const body = await response.json() as { error?: string; token?: string; datasetReadable?: boolean; wabaReadable?: boolean; numberMatches?: boolean };
+      const body = await response.json() as { error?: string; token?: string; reason?: string };
       if (!response.ok) throw new Error(body.error || "Ação indisponível.");
       if (body.token) setOneTimeToken(body.token);
-      if (action === "test") setMessage(`Leitura: dataset ${body.datasetReadable ? "OK" : "falhou"}; WABA ${body.wabaReadable ? "OK" : "falhou"}; número ${body.numberMatches ? "corresponde à unidade" : "não corresponde ou indisponível"}. Nenhum evento foi enviado.`);
+      if (action === "test") setMessage(body.reason || "Teste concluído. Confira o diagnóstico por recurso abaixo. Nenhum evento foi enviado.");
       else setMessage(action === "rotate_token" ? "Token criado. Copie agora; ele não será mostrado novamente." : "Alteração salva e auditada.");
       setAccessToken("");
       await load();
     } catch (error) { setMessage(error instanceof Error ? error.message : "Ação indisponível."); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setTesting(false); }
   }
 
   async function retry(event: Event) {
@@ -90,13 +95,29 @@ export function MetaEventsPanel() {
       <section className="meta-funnel"><div><h3>Funil registrado</h3><p>Todas as etapas aparecem aqui; somente as aprovadas podem ser candidatas à exportação.</p></div><div className="meta-funnel-rows">{(Object.keys(stageNames) as MetaStage[]).map((stage) => <div className="meta-funnel-row" key={stage}><span>{stageNames[stage]}</span><div><i style={{ width: `${100 * (data.funnel[stage] || 0) / maxFunnel}%` }} /></div><strong>{data.funnel[stage] || 0}</strong></div>)}</div></section>
       <section className="meta-log"><div className="meta-section-head"><h3>Registro de eventos</h3><small>“Aceito” confirma a resposta da API, não atribuição publicitária.</small></div>{data.events.length ? <div className="meta-log-list">{data.events.map((event) => <article key={event.id}><time>{dateTime.format(new Date(event.occurred_at))}</time><div><strong>{stageNames[event.event_type]}</strong><small>{unitName(event.unit)} · chat {event.chat_mask} · CTWA {event.ctwa_origin === "history" ? "histórico" : event.ctwa_origin === "source" ? "da fonte" : "ausente"}</small></div><span className={`meta-state ${event.state}`}>{stateNames[event.state] || event.state}</span><small>{event.reason || (event.fbtrace_id ? `Meta trace: ${event.fbtrace_id}` : "—")}</small><span>{event.attempts} tent.</span>{event.state === "failed" && <button className="secondary-button" disabled={busy || data.mode !== "live"} onClick={() => void retry(event)}>Reprocessar</button>}</article>)}</div> : <p className="meta-empty">Nenhum acontecimento registrado neste período. Confira o nó HTTP Request no workflow.</p>}</section>
     </>}
-    <section className="meta-config"><div className="meta-section-head"><div><h3>Configuração por unidade</h3><p>Credenciais e aprovações nunca são compartilhadas entre números. Não é necessário informar IDs da Meta para receber e armazenar eventos.</p></div><select aria-label="Unidade para configuração" value={settingsUnit} onChange={(event) => setSettingsUnit(event.target.value as MetaUnit)}><option value="sender_1">Unidade 1</option><option value="sender_2">Unidade 2</option></select></div>
+    <section className="meta-config"><div className="meta-section-head"><div><h3>Configuração por unidade</h3><p>Credenciais e aprovações nunca são compartilhadas entre números. Não é necessário informar IDs da Meta para receber e armazenar eventos.</p></div><select aria-label="Unidade para configuração" value={settingsUnit} disabled={busy} onChange={(event) => setSettingsUnit(event.target.value as MetaUnit)}><option value="sender_1">Unidade 1</option><option value="sender_2">Unidade 2</option></select></div>
       <div className="meta-config-grid"><div className="meta-config-form">
         <h4>Token de acesso Meta</h4>
         <p>A chave fica criptografada no servidor. Salvá-la não habilita envios nem comprova permissão para exportar dados.</p>
         <label>Token de acesso Meta<input type="password" value={accessToken} onChange={(event) => setAccessToken(event.target.value)} autoComplete="new-password" placeholder={current?.tokenConfigured ? "Configurado · cole para trocar" : "Cole o token"} /></label>
         <div className="meta-actions"><button className="primary-button" disabled={busy || !data?.encryptionReady || !accessToken.trim()} onClick={() => void admin("save_unit", { accessToken })}>Salvar token</button></div>
-        <small>A exportação sem WABA ainda está em revisão técnica e de privacidade. Remover os campos do formulário não remove as validações do servidor nem libera o envio de eventos clínicos. A captação interna pelo n8n permanece disponível.</small>
+        <h4>Teste de acesso sem WABA</h4>
+        <p>Consulta somente token, anúncio, Página e dataset. Não envia CTWA nem eventos e não autoriza exportação.</p>
+        <label>ID do anúncio (source_id) · opcional<input inputMode="numeric" value={sourceId} onChange={(event) => setSourceId(event.target.value)} maxLength={30} placeholder="Usar o último anúncio capturado nesta unidade" aria-describedby="meta-test-help" disabled={busy} /></label>
+        <small id="meta-test-help">O anúncio precisa ter sido recebido pelo n8n nesta unidade. Página e dataset são descobertos automaticamente; não é necessário informá-los.</small>
+        <div className="meta-actions"><button className="secondary-button" disabled={busy || !data || data.mode !== "record_only" || Boolean(accessToken.trim())} onClick={() => void admin("test", { sourceId })}>{testing ? "Consultando a Meta…" : "Testar acesso aos ativos"}</button></div>
+        {accessToken.trim() && <small>Salve o novo token antes de testar. O teste utiliza a credencial guardada no servidor.</small>}
+        {data?.mode === "live" && <small>Para este diagnóstico, configure META_EXPORT_MODE=record_only no servidor.</small>}
+        <div className="meta-asset-result" aria-busy={testing}>
+          {current?.assetValidation ? <>
+            <strong>{current.assetValidation.status === "passed" ? "Acesso de leitura confirmado" : "Verificação com pendências"}</strong>
+            <small>Último teste · {dateTime.format(new Date(current.assetValidation.checkedAt))} · Graph {current.assetValidation.graphVersion || "não configurada"}</small>
+            <p>{current.assetValidation.reason}</p>
+            <dl className="meta-asset-ids"><dt>Anúncio</dt><dd>{current.assetValidation.sourceId || "Não disponível"}</dd><dt>page_id</dt><dd>{current.assetValidation.pageId || "Não descoberto"}</dd><dt>dataset_id</dt><dd>{current.assetValidation.datasetId || "Não descoberto"}</dd></dl>
+            <ul className="meta-asset-checks">{current.assetValidation.checks.map((check) => <li key={check.key}><div><strong>{checkNames[check.key]}</strong><span className={`meta-state ${check.status === "passed" ? "accepted" : check.status === "failed" ? "failed" : ""}`}>{checkStates[check.status]}</span></div><p>{check.reason}{check.httpStatus ? ` HTTP ${check.httpStatus}.` : ""}{check.errorCode !== undefined ? ` Código Meta ${check.errorCode}.` : ""}</p></li>)}</ul>
+          </> : <p>Nenhum teste salvo para esta credencial. Execute o teste para ver o diagnóstico de cada recurso.</p>}
+          <small>Mesmo com acesso confirmado, o vínculo ao número WhatsApp e a compatibilidade de envio sem WABA não estão comprovados. Nenhum evento é enviado neste teste.</small>
+        </div>
         <label className="meta-toggle"><input type="checkbox" checked={current?.enabled || false} disabled={busy || !current?.enabled} onChange={(event) => void admin("save_unit", { enabled: event.target.checked })} />Unidade habilitada para exportação</label>
         <small>O modo global “somente registro” continua impedindo qualquer envio real. Nenhum ID já armazenado é apagado ao salvar o token.</small>
       </div>

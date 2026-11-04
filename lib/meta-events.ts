@@ -3,11 +3,13 @@ import { randomBytes } from "node:crypto";
 import { getFollowupPool, withTransaction } from "@/lib/followup-db";
 import { decryptMetaSecret, encryptMetaSecret, metaEncryptionReady } from "@/lib/meta-secret";
 import { classifyMetaDelivery, classifyMetaEvent, digest, duplicateMatches, equalDigest, extractAdDestination, protectedPhoneHash, metaEventName, type MetaStage, type MetaUnit, validateMetaInput } from "@/lib/meta-core";
+import { validateMetaAssets, type MetaAssetValidation } from "@/lib/meta-asset-validation";
 
 type UnitRow = {
   unit: MetaUnit; inbound_token_hash: string | null; encrypted_access_token: string | null;
   dataset_id: string | null; waba_id: string | null; enabled: boolean;
   enabled_at: Date | null; verified_at: Date | null; verified_number: string | null; capture_started_at: Date; updated_at: Date;
+  asset_validation: MetaAssetValidation | null;
 };
 type PolicyRow = { unit: MetaUnit; event_type: MetaStage; approved: boolean; export_enabled: boolean; approved_by: string | null; approved_at: Date | null; enabled_at: Date | null };
 type EventRow = { id: string; unit: MetaUnit; event_type: MetaStage; occurred_at: Date; encrypted_ctwa: string | null; state: string; attempts: number; auto_retry_count: number; source_event_id: string; chat_hash: string; ctwa_hash: string | null };
@@ -143,12 +145,13 @@ export async function getMetaOverview(unit: MetaUnit | "all", days: number, sear
   ]);
   const counts = Object.fromEntries(stats.rows.map((row) => [row.state, Number(row.count)]));
   return {
-    mode: mode(), encryptionReady: metaEncryptionReady(), graphVersionConfigured: Boolean(process.env.META_GRAPH_API_VERSION),
+    mode: mode(), encryptionReady: metaEncryptionReady(), graphVersionConfigured: /^v\d+\.\d+$/.test(process.env.META_GRAPH_API_VERSION?.trim() || ""),
     ingestUrl: process.env.META_INGEST_PUBLIC_URL?.trim() || null,
     counts: { received: Object.values(counts).reduce((a, b) => a + b, 0), noCtwa: counts.no_ctwa || 0, awaitingApproval: counts.awaiting_approval || 0, queued: (counts.queued || 0) + (counts.sending || 0), accepted: counts.accepted || 0, failed: counts.failed || 0 },
     funnel: Object.fromEntries(funnel.rows.map((row) => [row.event_type, Number(row.count)])),
     events: events.rows,
     units: settings.rows.map((row) => ({ unit: row.unit, enabled: row.enabled, verifiedAt: row.verified_at, datasetId: row.dataset_id, wabaId: row.waba_id,
+      assetValidation: row.asset_validation,
       tokenConfigured: Boolean(row.encrypted_access_token), inboundTokenConfigured: Boolean(row.inbound_token_hash), updatedAt: row.updated_at,
       policies: policies.rows.filter((policy) => policy.unit === row.unit).map((policy) => ({ eventType: policy.event_type, approved: policy.approved, exportEnabled: policy.export_enabled, approvedBy: policy.approved_by, approvedAt: policy.approved_at })) })),
   };
@@ -183,6 +186,7 @@ export async function saveMetaUnit(unit: MetaUnit, input: { datasetId?: unknown;
        enabled_at=CASE WHEN $6 OR $3 IS NOT NULL OR $4 IS NOT NULL OR $5=false THEN NULL WHEN $5=true AND enabled=false THEN now() ELSE enabled_at END,
        verified_at=CASE WHEN $6 OR $3 IS NOT NULL OR $4 IS NOT NULL THEN NULL ELSE verified_at END,
        verified_number=CASE WHEN $6 OR $3 IS NOT NULL OR $4 IS NOT NULL THEN NULL ELSE verified_number END,
+       asset_validation=CASE WHEN $6 OR $3 IS NOT NULL OR $4 IS NOT NULL THEN NULL ELSE asset_validation END,
        updated_at=now() WHERE unit=$1`,
       [unit, dataset, waba, token ? encryptMetaSecret(token) : null, input.enabled ?? null,input.datasetId!==undefined],
     );
@@ -234,33 +238,35 @@ export async function retryMetaEvent(id: string, actor: string) {
   });
 }
 
-export async function testMetaConfiguration(unit: MetaUnit) {
-  const row = await getFollowupPool().query<UnitRow>("SELECT * FROM followup.meta_unit_settings WHERE unit=$1", [unit]);
+export async function testMetaConfiguration(unit: MetaUnit, actor: string, sourceId?: unknown) {
+  // This diagnostic cannot authorize export or mutate event/click queues.
+  if (mode() !== "record_only") throw new MetaInputError("Este diagnóstico exige META_EXPORT_MODE=record_only no servidor.", 409);
+  if (sourceId !== undefined && (typeof sourceId !== "string" || (sourceId.trim() !== "" && !/^\d{5,30}$/.test(sourceId.trim())))) {
+    throw new MetaInputError("sourceId deve conter somente dígitos (5 a 30) ou ficar vazio para usar o último anúncio desta unidade.");
+  }
+  const pool = getFollowupPool();
+  const row = await pool.query<UnitRow>("SELECT * FROM followup.meta_unit_settings WHERE unit=$1", [unit]);
   const setting = row.rows[0];
-  if (!setting?.encrypted_access_token || !setting.waba_id) throw new MetaInputError("Informe token e WABA antes do teste.");
-  const version = graphVersion();
-  const token = decryptMetaSecret(setting.encrypted_access_token);
-  const sender = await getFollowupPool().query<{ whatsapp_number: string | null }>("SELECT whatsapp_number FROM followup.senders WHERE code=$1", [unit]);
-  const expectedNumber = (sender.rows[0]?.whatsapp_number || "").replace(/\D/g, "");
-  const [datasetResponse, wabaResponse] = await Promise.all([
-    fetch(`https://graph.facebook.com/${version}/${setting.waba_id}/dataset?fields=id`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), cache: "no-store" }),
-    fetch(`https://graph.facebook.com/${version}/${setting.waba_id}/phone_numbers?fields=display_phone_number`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000), cache: "no-store" }),
-  ]);
-  const wabaPayload = await wabaResponse.json().catch(() => ({})) as { data?: Array<{ display_phone_number?: string }> };
-  const numberMatches = Boolean(expectedNumber && wabaPayload.data?.some((item) => (item.display_phone_number || "").replace(/\D/g, "") === expectedNumber));
-  const datasetPayload = await datasetResponse.json().catch(() => ({}));
-  const datasetId = readWabaDataset(datasetPayload);
-  const datasetValid = datasetResponse.ok && Boolean(datasetId) && (!setting.dataset_id || datasetId === setting.dataset_id);
-  await getFollowupPool().query(
-    `UPDATE followup.meta_unit_settings SET verified_at=CASE WHEN $2 THEN now() ELSE NULL END,
-     verified_number=CASE WHEN $2 THEN $3 ELSE NULL END,
-     enabled=CASE WHEN $2 THEN enabled ELSE false END,
-     enabled_at=CASE WHEN $2 THEN enabled_at ELSE NULL END,updated_at=now() WHERE unit=$1`,
-    [unit, datasetValid && wabaResponse.ok && numberMatches, expectedNumber],
-  );
-  if (datasetValid && wabaResponse.ok && numberMatches) await getFollowupPool().query("UPDATE followup.meta_clicks SET resolution_state='pending',resolution_attempts=0,next_resolution_at=now() WHERE unit=$1 AND resolution_state='review' AND source_id IS NOT NULL",[unit]);
-  // Read-only access test. It does not prove that events will be accepted or attributed.
-  return { datasetReadable: datasetValid, wabaReadable: wabaResponse.ok, numberMatches, noEventSent: true };
+  if (!setting) throw new MetaInputError("Unidade não configurada.", 404);
+  const selected = typeof sourceId === "string" ? sourceId.trim() : "";
+  const captured = await pool.query<{ source_id: string }>(
+    `SELECT source_id FROM followup.meta_clicks WHERE unit=$1 AND source_id IS NOT NULL
+     AND ($2='' OR source_id=$2) ORDER BY created_at DESC LIMIT 1`, [unit, selected]);
+  const report = await validateMetaAssets({
+    accessToken: setting.encrypted_access_token ? decryptMetaSecret(setting.encrypted_access_token) : null,
+    graphVersion: process.env.META_GRAPH_API_VERSION?.trim() || null,
+    sourceId: selected || captured.rows[0]?.source_id || null, sourceBelongsToUnit: Boolean(captured.rowCount),
+  });
+  await withTransaction(async (client) => {
+    // A credential rotation during the network calls invalidates this result.
+    const saved = await client.query(
+      `UPDATE followup.meta_unit_settings SET asset_validation=$2::jsonb
+       WHERE unit=$1 AND encrypted_access_token IS NOT DISTINCT FROM $3 RETURNING unit`,
+      [unit, JSON.stringify(report), setting.encrypted_access_token]);
+    if (!saved.rowCount) throw new MetaInputError("O token mudou durante o teste. Execute novamente com a credencial atual.", 409);
+    await client.query("INSERT INTO followup.meta_admin_audit(unit,action,actor) VALUES($1,'test_assets_read_only',$2)", [unit, actor]);
+  });
+  return report;
 }
 
 function readWabaDataset(payload: unknown): string | null {
