@@ -70,6 +70,7 @@ export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
     return { id: row.id, state: row.state, duplicate: true };
   }
 
+  const candidate = metaEventName(event.eventType) !== null;
   return withTransaction(async (client) => {
     // Serialize a contact's identity, click history and idempotency decisions.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [chatHash]);
@@ -93,8 +94,8 @@ export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
     }
     const click = await client.query<{ id: string; ctwa_hash: string; encrypted_ctwa: string; source_id: string | null; dataset_id: string | null; page_id: string | null; resolution_state: string }>(
       `SELECT id,ctwa_hash,encrypted_ctwa,source_id,dataset_id,page_id,resolution_state FROM followup.meta_clicks
-       WHERE unit=$1 AND chat_hash=$2 AND observed_at <= $3 ORDER BY observed_at DESC LIMIT 1`,
-      [event.unit, chatHash, event.occurredAt],
+       WHERE unit=$1 AND chat_hash=$2 AND observed_at <= $3 AND $4::boolean ORDER BY observed_at DESC LIMIT 1`,
+      [event.unit, chatHash, event.occurredAt, candidate],
     );
     const ctwa = click.rows[0];
     const origin = ctwa ? "history" : null;
@@ -102,7 +103,6 @@ export async function recordMetaEvent(body: unknown, tokenUnit: MetaUnit) {
     const policy = await client.query<PolicyRow>("SELECT * FROM followup.meta_event_policy WHERE unit=$1 AND event_type=$2", [event.unit, event.eventType]);
     const config = setting.rows[0]; const rule = policy.rows[0];
     const historical = event.occurredAt < config.capture_started_at || event.occurredAt.getTime() < Date.now() - 7 * 86_400_000;
-    const candidate = metaEventName(event.eventType) !== null;
     const classified = classifyMetaEvent({ hasCtwa: Boolean(ctwa), historical, candidate, live: mode() === "live", unitEnabled: config.enabled,
       unitEnabledAt: config.enabled_at, typeApproved: rule.approved, typeEnabled: rule.export_enabled, typeEnabledAt: rule.enabled_at,
       occurredAt: event.occurredAt, configured: Boolean(config.encrypted_access_token && config.waba_id && config.verified_at) });

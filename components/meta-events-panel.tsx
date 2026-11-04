@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { MetaStage, MetaUnit } from "@/lib/meta-core";
 import type { MetaAssetValidation, AssetCheck } from "@/lib/meta-asset-validation";
 import { MetaEventsGuide } from "@/components/meta-events-guide";
+import { ConsultingMetaPanel } from "@/components/consulting-meta-panel";
 
 type Policy = { eventType: MetaStage; approved: boolean; exportEnabled: boolean; approvedBy: string | null; approvedAt: string | null };
 type Unit = { unit: MetaUnit; enabled: boolean; verifiedAt: string | null; datasetId: string | null; wabaId: string | null; tokenConfigured: boolean; inboundTokenConfigured: boolean; policies: Policy[]; assetValidation: MetaAssetValidation | null };
@@ -12,7 +13,7 @@ type Overview = { mode: "record_only" | "live"; encryptionReady: boolean; graphV
   counts: { received: number; noCtwa: number; awaitingApproval: number; queued: number; accepted: number; failed: number };
   funnel: Partial<Record<MetaStage, number>>; events: Event[]; units: Unit[] };
 
-const stageNames: Record<MetaStage, string> = { conversation_started: "Conversa iniciada", lead_qualified: "Lead qualificado", appointment_confirmed: "Agendamento confirmado", payment_confirmed: "Pagamento confirmado" };
+const stageNames: Record<MetaStage, string> = { conversation_started: "Conversa iniciada", lead_qualified: "Lead qualificado", payment_requested: "Pedido de sinal", payment_pending: "Pagamento pendente", payment_confirmed: "Pagamento confirmado", appointment_confirmed: "Agendamento confirmado" };
 const stateNames: Record<string, string> = { no_ctwa: "Sem CTWA", internal_only: "Somente interno", awaiting_approval: "Aguardando aprovação", queued: "Na fila", sending: "Enviando", accepted: "Aceito pela Meta", failed: "Falhou" };
 const dateTime = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short", timeZone: "America/Sao_Paulo" });
 const unitName = (unit: MetaUnit) => unit === "sender_1" ? "Unidade 1" : "Unidade 2";
@@ -121,10 +122,11 @@ export function MetaEventsPanel() {
           <small>Mesmo com acesso confirmado, o vínculo ao número WhatsApp e a compatibilidade de envio sem WABA não estão comprovados. Nenhum evento é enviado neste teste.</small>
         </div>
         <label className="meta-toggle"><input type="checkbox" checked={current?.enabled || false} disabled={busy || !current?.enabled} onChange={(event) => void admin("save_unit", { enabled: event.target.checked })} />Unidade habilitada para exportação</label>
-        <small>O modo global “somente registro” continua impedindo qualquer envio real. Nenhum ID já armazenado é apagado ao salvar o token.</small>
+        <small>O modo global “somente registro” bloqueia o envio automático desta área anterior. A nova área de consultoria possui testes manuais explícitos, sem liberação de produção. Nenhum ID já armazenado é apagado ao salvar o token.</small>
       </div>
       <div className="meta-policies"><h4>Revisão de eventos</h4><p>Dados de saúde exigem avaliação dos Termos da Meta e privacidade antes de cada liberação. Nome genérico ou hashing não torna o envio automaticamente permitido.</p><label className="meta-toggle"><input type="checkbox" checked={privacyChecked} onChange={(event) => setPrivacyChecked(event.target.checked)} />Confirmo que revisei a finalidade, os dados e os <a href="https://www.facebook.com/legal/technology_terms" target="_blank" rel="noreferrer">Termos das Ferramentas de Negócios</a>.</label>{current?.policies.map((policy) => <div className="meta-policy" key={policy.eventType}><div><strong>{stageNames[policy.eventType]}</strong><small>{policy.approved ? `Aprovado · ${policy.approvedAt ? dateTime.format(new Date(policy.approvedAt)) : "data indisponível"}` : "Não aprovado"}{policy.eventType === "payment_confirmed" || policy.eventType === "appointment_confirmed" ? " · apenas interno" : ""}</small></div>{policy.eventType === "conversation_started" || policy.eventType === "lead_qualified" ? <div>{!policy.approved && <button className="secondary-button" disabled={busy || !privacyChecked} onClick={() => void admin("policy", { eventType: policy.eventType, policyAction: "approve", privacyReviewConfirmed: true })}>Aprovar</button>}<button className="secondary-button" disabled={busy || (!policy.approved && !policy.exportEnabled)} onClick={() => void admin("policy", { eventType: policy.eventType, policyAction: policy.exportEnabled ? "disable" : "enable" })}>{policy.exportEnabled ? "Desabilitar" : "Habilitar"}</button></div> : <span>Interno</span>}</div>)}</div></div>
     </section>
+    <ConsultingMetaPanel key={settingsUnit} unit={settingsUnit} />
     <section className="meta-guide"><div className="meta-section-head"><div><h3>Guia do n8n · {unitName(settingsUnit)}</h3><p>Crie uma credencial Bearer exclusiva para esta unidade e use-a no nó HTTP Request.</p></div><button className="secondary-button" disabled={busy} onClick={() => void admin("rotate_token")}>{current?.inboundTokenConfigured ? "Rotacionar token" : "Criar token"}</button></div>{oneTimeToken && <div className="meta-one-time"><strong>Copie agora — não aparecerá novamente</strong><code>{oneTimeToken}</code><button className="secondary-button" onClick={() => void navigator.clipboard.writeText(oneTimeToken)}>Copiar token</button></div>}
       <MetaEventsGuide unit={settingsUnit} url={ingestUrl} timestamp={sampleTime} />
     </section>

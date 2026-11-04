@@ -446,7 +446,8 @@ select { min-height: 35px; padding: 0 30px 0 9px; }.source-picker select { min-w
 @media (max-width: 710px) { .hostinger-heading, .hostinger-toolbar { align-items: stretch; flex-direction: column; }.hostinger-heading { padding: 22px; }.hostinger-heading-actions { justify-items: start; }.hostinger-settings-body { grid-template-columns: 1fr; }.hostinger-controls { flex-wrap: wrap; }.hostinger-read-time span:last-child { margin-left: 0; width: 100%; }.hostinger-section-title { display: block; }.hostinger-section-title h3 { margin-top: 5px; }.hostinger-capacity-lane { grid-template-columns: 1fr; gap: 8px; }.hostinger-secondary-grid { grid-template-columns: 1fr; }.hostinger-secondary-grid article { border-right: 0; border-bottom: 1px solid var(--line); }.hostinger-secondary-grid article:last-child { border-bottom: 0; } }
 
 /* Eventos Meta herda a linguagem operacional: leitura primeiro, decisões ao final. */
-.meta-screen { display: grid; gap: 20px; margin-top: 24px; }
+.meta-screen { display: grid; grid-template-columns: minmax(0,1fr); min-width: 0; gap: 20px; margin-top: 24px; }
+.content:has(.consulting-meta-panel) { min-width: 0; }
 .meta-heading { display: flex; align-items: start; justify-content: space-between; gap: 24px; padding: 27px 30px; background: var(--night); color: #deeee9; }
 .meta-heading h2 { color: #fff; font: 500 clamp(28px, 3vw, 40px)/1 Georgia, serif; letter-spacing: -.04em; }
 .meta-heading p { max-width: 63ch; margin: 10px 0 0; color: #c2d8d1; font-size: 12px; line-height: 1.6; }
@@ -496,6 +497,13 @@ select { min-height: 35px; padding: 0 30px 0 9px; }.source-picker select { min-w
 .meta-trace-list article strong, .meta-trace-list article span, .meta-trace-list article small { font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .meta-trace-list article strong { color: var(--ink); }
 .meta-trace-list article span, .meta-trace-list article small { color: var(--ink-soft); }
+.meta-config-form textarea { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: #f5f8f5; font: 12px/1.5 Consolas, monospace; resize: vertical; }
+.meta-config-form select { min-width: 0; width: 100%; }
+.consulting-meta-panel, .consulting-meta-panel .meta-config-form > label { min-width: 0; }
+.consulting-meta-panel .meta-config-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.consulting-meta-panel .meta-toggle input { width: 16px; height: 16px; min-height: 16px; padding: 0; flex: 0 0 16px; }
+@media (max-width: 1120px) { .consulting-meta-panel .meta-config-grid { grid-template-columns: minmax(0,1fr); } }
+.meta-log-list details pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .meta-policy { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 11px; border-top: 1px solid var(--line); }.meta-policy strong, .meta-policy small { display: block; }.meta-policy strong { color: var(--ink); font-size: 11px; }.meta-policy small { margin-top: 4px; color: var(--ink-soft); font-size: 10px; line-height: 1.4; }.meta-policy > div:last-child { display: flex; gap: 6px; }
 .meta-guide { padding-bottom: 20px; }.meta-guide-steps { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); border-top: 1px solid var(--line); }.meta-guide-steps > div { min-width: 0; padding: 20px 23px; border-right: 1px solid var(--line); }.meta-guide-steps > div:last-child { border-right: 0; }.meta-guide-steps strong { color: var(--ink); font-size: 12px; }.meta-guide-steps p, .meta-sample small { display: block; color: var(--ink-soft); font-size: 11px; line-height: 1.6; }.meta-guide code { padding: 1px 3px; background: #edf3ef; font-size: 10px; }.meta-url { display: block; margin-bottom: 9px; overflow-wrap: anywhere; }
 .meta-sample { margin: 0 23px; padding: 16px; background: #f5f8f5; }.meta-sample > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.meta-sample strong { font-size: 12px; }.meta-sample pre { overflow: auto; margin: 12px 0; color: var(--ink); font-size: 11px; line-height: 1.6; }.meta-one-time { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 23px 18px; padding: 12px; background: var(--sun-pale); color: #604b1a; }.meta-one-time strong { font-size: 11px; }.meta-one-time code { overflow-wrap: anywhere; }

@@ -37,7 +37,15 @@ try {
     assert.equal(payment.status,202); assert.equal(payment.state,"internal_only");
     const rows=(await db.query("SELECT id,ctwa_hash FROM followup.meta_events WHERE chat_hash=$1",[chatHash])).rows;
     assert.equal(rows.find(r=>r.id===qualified.id)?.ctwa_hash,sha(base.ctwa_clid));
-    assert.equal(rows.find(r=>r.id===payment.id)?.ctwa_hash,sha("SyntheticClickIdentifierSecond"));
+    assert.equal(rows.find(r=>r.id===payment.id)?.ctwa_hash,null);
+    for (const event_type of ["payment_requested","payment_pending"]) {
+      const body={unit,chat_id:chat,event_type,occurred_at:time(20),source_event_id:run+unit+event_type};
+      const result=await call(body);
+      assert.equal(result.status,202); assert.equal(result.state,"internal_only");
+      assert.equal((await call(body)).status,200);
+      const storedInternal=(await db.query("SELECT ctwa_hash,encrypted_ctwa,click_id,dataset_id,page_id,source_id,export_eligible_at_ingest FROM followup.meta_events WHERE id=$1",[result.id])).rows[0];
+      assert.deepEqual(storedInternal,{ctwa_hash:null,encrypted_ctwa:null,click_id:null,dataset_id:null,page_id:null,source_id:null,export_eligible_at_ingest:false});
+    }
     const stored=(await db.query("SELECT attribution FROM followup.meta_events WHERE id=$1",[first.id])).rows[0];
     assert.deepEqual(stored.attribution,base.attribution);
     const clickData=(await db.query("SELECT attribution FROM followup.meta_clicks WHERE chat_hash=$1 ORDER BY observed_at",[chatHash])).rows;

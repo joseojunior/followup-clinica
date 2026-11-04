@@ -14,5 +14,6 @@ test("exemplos do guia são aceitos para cada unidade e etapa", () => {
     assert.deepEqual(buildMetaGuideSample(unit,stage,time),body);
     assert.equal("dataset_id" in body,false);
     assert.equal("page_id" in body,false);
+    if (!["conversation_started","lead_qualified"].includes(stage)) assert.equal("phone" in body,false);
   }
 });

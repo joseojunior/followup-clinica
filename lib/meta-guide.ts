@@ -4,11 +4,13 @@ export function buildMetaGuideSample(unit: MetaUnit, stage: MetaStage, occurredA
   return {
     unit,
     chat_id: "5511999999999@s.whatsapp.net",
-    phone: "+5511999999999",
+    ...(stage === "conversation_started" || stage === "lead_qualified" ? { phone: "+5511999999999" } : {}),
     event_type: stage,
     occurred_at: occurredAt,
     source_event_id: stage === "conversation_started" ? "ID_REAL_DA_MENSAGEM"
       : stage === "appointment_confirmed" ? "ID_REAL_DO_AGENDAMENTO"
+      : stage === "payment_requested" || stage === "payment_pending" ? "ID_REAL_DA_COBRANCA"
+      : stage === "payment_confirmed" ? "ID_REAL_DA_TRANSACAO"
       : `CHAT_EXEMPLO:${stage}`,
     ...(stage === "conversation_started" ? {
       ctwa_clid: "CTWA_REAL_DO_REFERRAL", source_id: "123456789012345",

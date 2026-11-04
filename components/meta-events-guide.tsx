@@ -7,6 +7,8 @@ import { buildMetaGuideSample } from "@/lib/meta-guide";
 const stages: Record<MetaStage, string> = {
   conversation_started: "Primeiro contato / CTWA",
   lead_qualified: "Lead qualificado",
+  payment_requested: "Pedido de sinal — interno",
+  payment_pending: "Pagamento pendente — interno",
   appointment_confirmed: "Agendamento confirmado — interno",
   payment_confirmed: "Pagamento confirmado — interno",
 };
@@ -43,7 +45,7 @@ export function MetaEventsGuide({ unit, url, timestamp }: { unit: MetaUnit; url:
           <dt>ctwa_clid e source_id</dt><dd>Somente no primeiro contato: identificador bruto do clique e ID do anúncio. Não aplique hash no CTWA. A plataforma consulta dataset/página no backend; não envie dataset_id ou page_id no JSON.</dd>
           <dt>attribution (opcional)</dt><dd>Somente no primeiro contato: UTMs, ad_title, source_url e thumbnail_url. Envie apenas os campos recebidos ou omita o bloco inteiro. Ficam no banco para futuros dashboards, mesmo sem CTWA; não são enviados à Meta. Não inclua dados do paciente, credenciais ou conversa em UTMs/URLs. UTMs: até 256 caracteres cada; título: 512; URLs: 2048, HTTPS sem credenciais. Nenhuma URL/imagem é baixada.</dd>
         </dl>
-        <p>Qualificação prepara QualifiedLead para revisão. Agendamento e pagamento permanecem internos; pagamento sem ID de transação não gera Purchase e representa apenas um marco por chat. Não envie nome, e-mail, tratamento, conversa ou token Meta.</p>
+        <p>Pedido de sinal, pagamento pendente, pagamento confirmado e agendamento são apenas internos. Nenhum desses marcos gera Purchase, AddToCart ou InitiateCheckout, nem recebe CTWA/dataset/Página do histórico. Envie pedido somente depois de gerar a cobrança; pendência depois de confirmar esse estado; pagamento somente após confirmação efetiva. Agendamento não presume pagamento. Não envie nome, e-mail, tratamento, conversa ou token Meta.</p>
       </details>
       <details className="meta-guide-detail"><summary>Mapeamento dos webhooks Uazapi dos seus fluxos</summary>
         <dl>

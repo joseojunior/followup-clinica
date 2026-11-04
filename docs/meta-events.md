@@ -70,15 +70,35 @@ No webhook dos anexos, Title/SourceUrl/ThumbnailUrl ficam em body.Payload.Conten
 
 ### Eventos posteriores
 
-Envie unit/chat/phone, horário real, event_type e source_event_id estáveis. Remova ctwa_clid/source_id: usa o último clique anterior ao marco.
+#### Marcos operacionais internos
+
+`payment_requested` registra a geração/envio do pedido de sinal e `payment_pending` registra um pagamento ainda não confirmado. Use o ID persistido da cobrança como source_event_id, o mesmo chat_id e o horário real de cada mudança. `payment_confirmed` registra somente a confirmação efetiva (use o ID da transação) e `appointment_confirmed` registra a confirmação da agenda (use o ID do agendamento). Não presuma pagamento pelo simples agendamento.
+
+Esses quatro marcos ficam em internal_only mesmo sem CTWA e não consultam/copiam o histórico de cliques, nem preparam Purchase/AddToCart/InitiateCheckout, fila ou payload para a Meta. Os novos tipos têm bloqueios adicionais no banco contra habilitação e exportação. Os exemplos do guia omitem telefone para os marcos internos. Não há envio externo nem contabilização de receita nesta etapa: valores/transações detalhadas exigem uma implementação financeira interna separada.
+
+Exemplo de pedido de sinal (substitua o horário e os identificadores):
+
+```json
+{
+  "unit": "sender_1",
+  "chat_id": "ID_INTERNO_DO_CHAT",
+  "event_type": "payment_requested",
+  "occurred_at": "2026-11-04T14:30:00Z",
+  "source_event_id": "ID_DA_COBRANCA"
+}
+```
+
+Envie unit/chat_id, horário real, event_type e source_event_id estáveis. phone é opcional e desnecessário nos exemplos internos. Remova ctwa_clid/source_id: somente a qualificação pode consultar o último clique; os marcos internos não o herdam.
 
 | Marco | event_type | source_event_id |
 |---|---|---|
 | Qualificação | lead_qualified | ID da mudança; se única por lead, chat + ":lead_qualified" |
 | Agendamento | appointment_confirmed | id_agendamento |
-| Pagamento interno | payment_confirmed | chat + ":payment_confirmed" |
+| Pedido de sinal | payment_requested | ID da cobrança |
+| Pagamento pendente | payment_pending | ID da cobrança |
+| Pagamento interno | payment_confirmed | ID da transação |
 
-Sem ID de transação não há Purchase/receita. Pagamento é somente um marco por chat; pagamentos múltiplos não são distinguidos. O parser “Negócio Fechado” pode emitir esse marco interno sem inferir compra automaticamente. Para idempotência de um marco único, persista também o horário original: retry não usa agora.
+Esses registros não geram Purchase ou contabilização de receita. IDs reais de transação distinguem confirmações diferentes; repetir o mesmo ID/etapa não cria outra linha. Uma integração antiga que use chat + etapa continuará representando somente um marco por chat. Não infira pagamento a partir de “Negócio Fechado”. Preserve também o horário original: retry não usa agora.
 
 ## Descoberta, entrega e corte
 

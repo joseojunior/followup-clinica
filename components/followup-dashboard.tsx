@@ -710,7 +710,7 @@ export function FollowupDashboard() {
         <p className="workspace">CENTRAL DE FOLLOW-UP<br />CLÍNICA · OPERAÇÃO</p>
         <nav aria-label="Navegação principal">
           {navItems.map((item) => (
-            <button key={item.label} className={activeNav === item.label ? "nav-item active" : "nav-item"} onClick={() => setActiveNav(item.label)} title={item.label}>
+            <button key={item.label} className={activeNav === item.label ? "nav-item active" : "nav-item"} onClick={(event) => { setActiveNav(item.label); if (event.detail > 0) event.currentTarget.blur(); }} title={item.label}>
               <span className="nav-dot" aria-hidden="true">{item.mark}</span><span className="nav-label">{item.label}</span>
             </button>
           ))}

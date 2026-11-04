@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export const META_UNITS = ["sender_1", "sender_2"] as const;
-export const META_STAGES = ["conversation_started", "lead_qualified", "appointment_confirmed", "payment_confirmed"] as const;
+export const META_STAGES = ["conversation_started", "lead_qualified", "payment_requested", "payment_pending", "payment_confirmed", "appointment_confirmed"] as const;
 export type MetaUnit = typeof META_UNITS[number];
 export type MetaStage = typeof META_STAGES[number];
 
@@ -115,9 +115,9 @@ export function duplicateMatches(stored: { chat_hash: string; occurred_at: Date 
 }
 
 export function classifyMetaEvent(input: { hasCtwa: boolean; historical: boolean; candidate: boolean; live: boolean; unitEnabled: boolean; unitEnabledAt: Date | null; typeApproved: boolean; typeEnabled: boolean; typeEnabledAt: Date | null; occurredAt: Date; configured: boolean }) {
+  if (!input.candidate) return { state: "internal_only", reason: "Etapa somente interna" } as const;
   if (!input.hasCtwa) return { state: "no_ctwa", reason: "Sem CTWA" } as const;
   if (input.historical) return { state: "internal_only", reason: "Fora da janela de exportação ou anterior à ativação" } as const;
-  if (!input.candidate) return { state: "internal_only", reason: "Etapa somente interna" } as const;
   if (input.live && input.unitEnabled && input.unitEnabledAt && input.occurredAt >= input.unitEnabledAt && input.typeApproved && input.typeEnabled && input.typeEnabledAt && input.occurredAt >= input.typeEnabledAt && input.configured) return { state: "queued", reason: null } as const;
   return { state: "awaiting_approval", reason: input.live ? "Exportação não aprovada ou unidade desativada" : "Modo somente registro" } as const;
 }

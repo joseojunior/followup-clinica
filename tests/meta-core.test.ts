@@ -50,3 +50,20 @@ test("classifies Meta responses and bounds retries", () => {
   assert.equal(classifyMetaDelivery({ httpStatus: 400, eventsReceived: 0, errorCode: "invalid", autoRetryCount: 0 }), "failed");
   assert.equal(classifyMetaDelivery({ httpStatus: null, eventsReceived: 0, errorCode: "timeout", autoRetryCount: 1 }), "queued");
 });
+
+test("payment and appointment stages stay internal even in live mode and without any CTWA", () => {
+  const occurredAt = new Date(now);
+  for (const eventType of ["payment_requested", "payment_pending", "payment_confirmed", "appointment_confirmed"] as const) {
+    const event = { unit: "sender_1", chat_id: "internal-chat", event_type: eventType, occurred_at: occurredAt.toISOString(), source_event_id: "charge-or-appointment-123" };
+    assert.equal(validateMetaInput(event, now).eventType, eventType);
+    assert.equal(metaEventName(eventType), null);
+    for (const hasCtwa of [true, false]) {
+      const classified = classifyMetaEvent({ hasCtwa, candidate: false, historical: false, live: true,
+        unitEnabled: true, unitEnabledAt: new Date(now - 1000), typeApproved: true, typeEnabled: true,
+        typeEnabledAt: new Date(now - 1000), occurredAt, configured: true });
+      assert.equal(classified.state, "internal_only");
+    }
+    assert.throws(() => validateMetaInput({ ...event, ctwa_clid: "ARClickIdentifier123" }, now), /ctwa_clid/);
+    assert.throws(() => validateMetaInput({ ...event, source_id: "123456" }, now), /source_id/);
+  }
+});
