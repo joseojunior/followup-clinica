@@ -21,7 +21,7 @@ export async function setConsultingProduction(unit:MetaUnit,enabled:boolean,acto
     }
     const row=(await c.query(`UPDATE followup.consulting_meta_settings SET production_enabled=$2,test_only=NOT $2,
       production_enabled_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END WHERE unit=$1 RETURNING production_enabled_at`,[unit,enabled])).rows[0];
-    await c.query("UPDATE followup.consulting_meta_policy SET enabled=$2,enabled_at=CASE WHEN $2 THEN $3::timestamptz ELSE NULL END WHERE unit=$1",[unit,enabled,row.production_enabled_at]);
+    await c.query("UPDATE followup.consulting_meta_policy SET enabled=$2,enabled_at=CASE WHEN $2 THEN (SELECT production_enabled_at FROM followup.consulting_meta_settings WHERE unit=$1) ELSE NULL END WHERE unit=$1",[unit,enabled]);
     if(!enabled)await c.query("UPDATE followup.consulting_meta_events SET production_state='excluded',production_result=$2::jsonb WHERE unit=$1 AND production_state IN ('queued','preparing')",[unit,JSON.stringify({reason:"Produção pausada; não há recuperação retroativa."})]);
     await c.query("INSERT INTO followup.meta_admin_audit(unit,action,actor) VALUES($1,$2,$3)",[unit,enabled?"consulting_enable_production":"consulting_disable_production",actor]);
     return {enabled,enabledAt:row.production_enabled_at};

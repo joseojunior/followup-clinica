@@ -19,10 +19,11 @@ try{
       AND event_type IN ('conversation_started','lead_qualified','payment_requested','appointment_confirmed')
       AND test_result->>'datasetId'=$1 AND test_result->>'pageId'=$2`,[s.dataset_id,s.page_id])).rows[0].total;
     if(pilots!==4)throw new Error("Require four accepted pilot stages for Unit 1 destination within seven days.");
-    const row=(await c.query(`UPDATE followup.consulting_meta_settings SET production_enabled=true,test_only=false,
-      production_enabled_at=clock_timestamp() WHERE unit='sender_1' RETURNING production_enabled_at`)).rows[0];
-    const policies=await c.query(`UPDATE followup.consulting_meta_policy SET enabled=true,enabled_at=$1
-      WHERE unit='sender_1' RETURNING event_type`,[row.production_enabled_at]);
+    await c.query(`UPDATE followup.consulting_meta_settings SET production_enabled=true,test_only=false,
+      production_enabled_at=clock_timestamp() WHERE unit='sender_1'`);
+    const policies=await c.query(`UPDATE followup.consulting_meta_policy SET enabled=true,
+      enabled_at=(SELECT production_enabled_at FROM followup.consulting_meta_settings WHERE unit='sender_1')
+      WHERE unit='sender_1' RETURNING event_type`);
     if(policies.rowCount!==4)throw new Error("Unexpected policy count; activation rolled back.");
     await c.query(`INSERT INTO followup.meta_admin_audit(unit,action,actor)
       VALUES('sender_1','consulting_enable_production','deployment:explicit-user-authorization-new-only')`);

@@ -17,7 +17,9 @@ export async function recordConsultingEvent(body: unknown, unit: MetaUnit) {
       if (old.input_hash !== hash) throw new MetaInputError("ID já utilizado com dados diferentes.",409);
       return {id:old.id,duplicate:true,state:old.test_state,productionState:old.production_state};
     }
-    const settings = (await c.query("SELECT * FROM followup.consulting_meta_settings WHERE unit=$1 FOR SHARE", [unit])).rows[0];
+    // node-postgres decodes timestamptz as Date (milliseconds). Keep the activation
+    // generation as PostgreSQL text so the worker's exact equality retains microseconds.
+    const settings = (await c.query("SELECT *,production_enabled_at::text AS production_activation_exact FROM followup.consulting_meta_settings WHERE unit=$1 FOR SHARE", [unit])).rows[0];
     if (!settings || input.occurredAt < settings.capture_started_at) throw new MetaInputError("Somente novos acontecimentos de consultoria após a ativação desta área; histórico antigo não é importado.",409);
     // Deliberately never query legacy meta_events/meta_clicks or source lead databases.
     const conversation = input.stage === "conversation_started" ? null : (await c.query("SELECT id,is_synthetic,created_at,occurred_at,encrypted_ctwa FROM followup.consulting_meta_events WHERE unit=$1 AND chat_hash=$2 AND event_type='conversation_started' AND occurred_at <= $3 ORDER BY occurred_at DESC LIMIT 1", [unit,input.chatHash,input.occurredAt])).rows[0];
@@ -29,7 +31,7 @@ export async function recordConsultingEvent(body: unknown, unit: MetaUnit) {
     try {
       const row = await c.query(`INSERT INTO followup.consulting_meta_events(unit,event_type,source_event_id,input_hash,chat_hash,occurred_at,conversation_id,encrypted_ctwa,source_id,ph_hash,fn_hash,ln_hash,transaction_hash,value,attribution,is_synthetic,production_eligible,production_activation_at,production_state,production_next_at)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16,$17,$18,$19,CASE WHEN $19='queued' THEN now() ELSE NULL END) RETURNING id,test_state,production_state`,
-      [unit,input.stage,input.sourceEventId,hash,input.chatHash,input.occurredAt,conversation?.id || null,input.ctwa ? encryptMetaSecret(input.ctwa) : null,input.sourceId,input.ph,input.fn,input.ln,input.transactionHash,input.value,JSON.stringify(input.attribution ?? {}),synthetic,eligible,eligible?settings.production_enabled_at:null,productionState]);
+      [unit,input.stage,input.sourceEventId,hash,input.chatHash,input.occurredAt,conversation?.id || null,input.ctwa ? encryptMetaSecret(input.ctwa) : null,input.sourceId,input.ph,input.fn,input.ln,input.transactionHash,input.value,JSON.stringify(input.attribution ?? {}),synthetic,eligible,eligible?settings.production_activation_exact:null,productionState]);
       return {id:row.rows[0].id,duplicate:false,state:row.rows[0].test_state,productionState:row.rows[0].production_state};
     } catch(e) { if ((e as {code?:string}).code === "23505") throw new MetaInputError("Evento ou transação já registrado; não gere outra compra para o mesmo sinal.",409); throw e; }
   });
