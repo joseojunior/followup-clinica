@@ -5,6 +5,8 @@ import { LogoutButton } from "@/components/logout-button";
 import { N8nPanel } from "@/components/n8n-panel";
 import { HostingerPanel } from "@/components/hostinger-panel";
 import { MetaEventsPanel } from "@/components/meta-events-panel";
+import { OperationalOverview } from "@/components/operational-overview";
+import type { OperationalDashboardData } from "@/lib/operational-dashboard-core";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type ContentKind = "Texto" | "Sticker + texto" | "Imagem + texto";
@@ -93,21 +95,7 @@ type CampaignTestConfig = {
   recent: Array<{ id: string; recipient_phone: string; step_order: number; send_mode: string; state: string; error_message: string | null; created_at: string }>;
 };
 
-type DashboardData = {
-  campaigns: { total: number; active: number };
-  enrollments: { total: number; active: number; attention: number };
-  messages: { sent_today: number; queued: number; failed: number };
-  controls: {
-    total: number;
-    pending: number;
-    in_progress: number;
-    completed: number;
-    followups_done: number;
-    with_source_stage: number;
-    source_stages_observed: number;
-  };
-  recent: Array<{ state: string; scheduled_at: string; sent_at: string | null; source_chat_id: string; source_name: string }>;
-};
+type DashboardData = OperationalDashboardData;
 
 type LeadRow = {
   id: string;
@@ -534,7 +522,7 @@ export function FollowupDashboard() {
   useEffect(() => {
     Promise.all([
       loadCampaigns(),
-      fetch("/api/dashboard").then((response) => response.ok ? response.json() : Promise.reject()),
+      fetch("/api/dashboard").then((response) => response.ok ? response.json() : Promise.reject()).then(data=>{setDashboard(data);return data;}),
       fetch("/api/leads").then((response) => response.ok ? response.json() : Promise.reject()),
       fetch("/api/messages").then((response) => response.ok ? response.json() : Promise.reject()),
       loadLibrary(),
@@ -735,20 +723,7 @@ export function FollowupDashboard() {
           <em>Ver conexões →</em>
         </button>}
 
-        {activeNav === "Visão geral" && <div className="pulse-rail" aria-label="Status da operação"><span>AGORA</span><i /><strong>{dashboard?.messages.queued ?? 0} mensagens aguardam processamento</strong><i /><span>PRÓXIMAS AÇÕES</span></div>}
-
-        {activeNav === "Visão geral" && <>
-          <section className="metric-grid" aria-label="Resumo operacional">
-            <Metric label="Envios hoje" value={String(dashboard?.messages.sent_today ?? 0)} hint="Modo de simulação ativo" />
-            <Metric label="Follow-ups feitos" value={String(dashboard?.controls.followups_done ?? 0)} hint={`${dashboard?.controls.source_stages_observed ?? 0} etapas já acompanhadas`} />
-            <Metric label="Leads controlados" value={String(dashboard?.controls.total ?? 0)} hint={`${dashboard?.controls.in_progress ?? 0} em andamento`} />
-            <Metric label="Atenção" value={String((dashboard?.messages.failed ?? 0) + (dashboard?.enrollments.attention ?? 0))} hint="Falhas e pausas" alert />
-          </section>
-          <section className="overview-card">
-            <div><p className="eyebrow">Atividade recente</p><h2>Últimas movimentações</h2></div>
-            {dashboard?.recent.length ? <div className="activity-list">{dashboard.recent.map((item, index) => <article key={`${item.source_chat_id}-${index}`}><span className={`activity-dot ${item.state}`} /><div><strong>{item.source_name}</strong><small>Atendimento acompanhado pela cadência</small></div><span>{item.state === "sent" ? "enviado" : item.state === "scheduled" ? "agendado" : item.state}</span></article>)}</div> : <p className="empty-state">Quando uma mensagem for processada, ela aparecerá aqui.</p>}
-          </section>
-        </>}
+        {activeNav === "Visão geral" && <OperationalOverview connections={connections} senders={senderSettings} campaigns={savedCampaigns} onNavigate={setActiveNav} onLoaded={setDashboard}/>}
 
         {activeNav === "Campanhas" && <>
         {campaignComposerOpen && <section className="builder-card campaign-composer" role="dialog" aria-modal="true" aria-labelledby="campaign-composer-title">

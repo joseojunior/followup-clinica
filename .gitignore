@@ -5,3 +5,5 @@ node_modules/
 coverage/
 *.log
 *.tsbuildinfo
+.codex-tmp/
+.impeccable/review/*.png
